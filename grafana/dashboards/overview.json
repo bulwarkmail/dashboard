@@ -1,0 +1,270 @@
+{
+  "uid": "bulwark-overview",
+  "title": "Bulwark / Overview",
+  "tags": ["bulwark"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-90d", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total stars",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT sum(stars) AS value FROM (SELECT DISTINCT ON (repo_id) repo_id, stars FROM repo_snapshots ORDER BY repo_id, ts DESC) latest"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Total open issues",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT sum(open_issues) AS value FROM (SELECT DISTINCT ON (repo_id) repo_id, open_issues FROM repo_snapshots ORDER BY repo_id, ts DESC) latest"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Total open PRs",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT sum(open_prs) AS value FROM (SELECT DISTINCT ON (repo_id) repo_id, open_prs FROM repo_snapshots ORDER BY repo_id, ts DESC) latest"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Total commits",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT sum(total_commits) AS value FROM (SELECT DISTINCT ON (repo_id) repo_id, total_commits FROM commit_snapshots ORDER BY repo_id, ts DESC) latest"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Total LOC (code)",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH latest_ts AS (SELECT repo_id, max(ts) AS ts FROM loc_snapshots GROUP BY repo_id) SELECT sum(l.code) AS value FROM loc_snapshots l JOIN latest_ts t ON l.repo_id=t.repo_id AND l.ts=t.ts WHERE l.language NOT IN ('Total','ALL','License','Plain Text')"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Total release downloads",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT coalesce(sum(download_count), 0) AS value FROM releases"
+        }
+      ]
+    },
+
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Stars over time (per repo)",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 5
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": ["lastNotNull"]
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroup(ts, $__interval) AS time, repo_id AS metric, max(stars) AS stars FROM repo_snapshots WHERE $__timeFilter(ts) GROUP BY 1, repo_id ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Traffic - views per day (sum across repos)",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "bars", "fillOpacity": 50 }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT day::timestamptz AS time, sum(count) AS views, sum(uniques) AS unique_visitors FROM traffic_views_daily WHERE $__timeFilter(day::timestamptz) GROUP BY day ORDER BY day"
+        }
+      ]
+    },
+
+    {
+      "id": 20,
+      "type": "table",
+      "title": "Repos at a glance",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 0, "y": 12, "w": 24, "h": 10 },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "stars" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-background", "mode": "gradient" }
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "open_issues" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-background", "mode": "gradient" }
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH s AS (SELECT DISTINCT ON (repo_id) repo_id, stars, open_issues, open_prs FROM repo_snapshots ORDER BY repo_id, ts DESC), c AS (SELECT DISTINCT ON (repo_id) repo_id, total_commits, commits_last_30d, authors_last_30d FROM commit_snapshots ORDER BY repo_id, ts DESC), v AS (SELECT repo_id, sum(count) AS views_14d, sum(uniques) AS uniques_14d FROM traffic_views_daily WHERE day >= current_date - interval '14 days' GROUP BY repo_id) SELECT r.id AS repo, r.primary_language AS language, s.stars, s.open_issues, s.open_prs, c.total_commits, c.commits_last_30d AS commits_30d, c.authors_last_30d AS authors_30d, coalesce(v.views_14d, 0) AS views_14d, coalesce(v.uniques_14d, 0) AS uniques_14d FROM repos r LEFT JOIN s ON r.id = s.repo_id LEFT JOIN c ON r.id = c.repo_id LEFT JOIN v ON r.id = v.repo_id WHERE r.archived = false ORDER BY s.stars DESC NULLS LAST, r.id"
+        }
+      ]
+    },
+
+    {
+      "id": 21,
+      "type": "barchart",
+      "title": "LOC by language (across all repos)",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 0, "y": 22, "w": 12, "h": 9 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": {
+        "orientation": "horizontal",
+        "stacking": "none",
+        "showValue": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH latest AS (SELECT repo_id, max(ts) AS ts FROM loc_snapshots GROUP BY repo_id) SELECT l.language, sum(l.code) AS code FROM loc_snapshots l JOIN latest t ON l.repo_id=t.repo_id AND l.ts=t.ts WHERE l.language NOT IN ('Total','ALL','License','Plain Text') GROUP BY l.language ORDER BY code DESC LIMIT 12"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "table",
+      "title": "Recent releases",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 12, "y": 22, "w": 12, "h": 9 },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT repo_id AS repo, tag, name, published_at, download_count AS downloads FROM releases WHERE draft = false AND published_at IS NOT NULL ORDER BY published_at DESC LIMIT 20"
+        }
+      ]
+    }
+  ]
+}

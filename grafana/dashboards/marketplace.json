@@ -1,0 +1,180 @@
+{
+  "uid": "bulwark-marketplace",
+  "title": "Bulwark / Marketplace",
+  "tags": ["bulwark", "umami"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-30d", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Pageviews",
+      "datasource": { "type": "postgres", "uid": "umami_pg" },
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS value FROM website_event WHERE website_id = 'a78a37e2-e48d-4971-8970-ccd48af3c1dc'::uuid AND event_type = 1 AND $__timeFilter(created_at)"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Extension downloads",
+      "datasource": { "type": "postgres", "uid": "umami_pg" },
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": { "color": { "fixedColor": "green", "mode": "fixed" } }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS value FROM website_event WHERE website_id = 'a78a37e2-e48d-4971-8970-ccd48af3c1dc'::uuid AND event_name = 'extension-download' AND $__timeFilter(created_at)"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Submissions",
+      "datasource": { "type": "postgres", "uid": "umami_pg" },
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS value FROM website_event WHERE website_id = 'a78a37e2-e48d-4971-8970-ccd48af3c1dc'::uuid AND event_name = 'extension-submit' AND $__timeFilter(created_at)"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Reviews (approve / reject)",
+      "datasource": { "type": "postgres", "uid": "umami_pg" },
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS value FROM website_event WHERE website_id = 'a78a37e2-e48d-4971-8970-ccd48af3c1dc'::uuid AND event_name = 'extension-review' AND $__timeFilter(created_at)"
+        }
+      ]
+    },
+
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Downloads / submissions / reviews over time",
+      "datasource": { "type": "postgres", "uid": "umami_pg" },
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "bars", "fillOpacity": 60 }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroup(created_at, $__interval) AS time, count(*) FILTER (WHERE event_name = 'extension-download') AS downloads, count(*) FILTER (WHERE event_name = 'extension-submit') AS submissions, count(*) FILTER (WHERE event_name = 'extension-review') AS reviews FROM website_event WHERE website_id = 'a78a37e2-e48d-4971-8970-ccd48af3c1dc'::uuid AND event_type = 2 AND $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+        }
+      ]
+    },
+
+    {
+      "id": 20,
+      "type": "table",
+      "title": "Top extensions by download (URL path)",
+      "datasource": { "type": "postgres", "uid": "umami_pg" },
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 9 },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT url_path AS bundle, count(*) AS downloads, count(DISTINCT session_id) AS distinct_sessions FROM website_event WHERE website_id = 'a78a37e2-e48d-4971-8970-ccd48af3c1dc'::uuid AND event_name = 'extension-download' AND $__timeFilter(created_at) GROUP BY url_path ORDER BY downloads DESC LIMIT 25"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "table",
+      "title": "Recent submissions",
+      "datasource": { "type": "postgres", "uid": "umami_pg" },
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 9 },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH s AS (SELECT we.event_id, we.created_at, max(CASE WHEN ed.data_key = 'slug' THEN ed.string_value END) AS slug, max(CASE WHEN ed.data_key = 'version' THEN ed.string_value END) AS version, max(CASE WHEN ed.data_key = 'type' THEN ed.string_value END) AS type, max(CASE WHEN ed.data_key = 'submissionType' THEN ed.string_value END) AS submission_type FROM website_event we LEFT JOIN event_data ed ON ed.website_event_id = we.event_id WHERE we.website_id = 'a78a37e2-e48d-4971-8970-ccd48af3c1dc'::uuid AND we.event_name = 'extension-submit' AND $__timeFilter(we.created_at) GROUP BY we.event_id, we.created_at) SELECT created_at, slug, version, type, submission_type FROM s ORDER BY created_at DESC LIMIT 25"
+        }
+      ]
+    },
+
+    {
+      "id": 30,
+      "type": "piechart",
+      "title": "Reviews - approve vs reject",
+      "datasource": { "type": "postgres", "uid": "umami_pg" },
+      "gridPos": { "x": 0, "y": 21, "w": 8, "h": 8 },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": ["value", "percent"]
+        },
+        "pieType": "donut"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT ed.string_value AS action, count(*) AS reviews FROM website_event we JOIN event_data ed ON ed.website_event_id = we.event_id WHERE we.website_id = 'a78a37e2-e48d-4971-8970-ccd48af3c1dc'::uuid AND we.event_name = 'extension-review' AND ed.data_key = 'action' AND $__timeFilter(we.created_at) GROUP BY ed.string_value"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "table",
+      "title": "Recent reviews",
+      "datasource": { "type": "postgres", "uid": "umami_pg" },
+      "gridPos": { "x": 8, "y": 21, "w": 16, "h": 8 },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH r AS (SELECT we.event_id, we.created_at, max(CASE WHEN ed.data_key = 'action' THEN ed.string_value END) AS action, max(CASE WHEN ed.data_key = 'slug' THEN ed.string_value END) AS slug, max(CASE WHEN ed.data_key = 'version' THEN ed.string_value END) AS version FROM website_event we LEFT JOIN event_data ed ON ed.website_event_id = we.event_id WHERE we.website_id = 'a78a37e2-e48d-4971-8970-ccd48af3c1dc'::uuid AND we.event_name = 'extension-review' AND $__timeFilter(we.created_at) GROUP BY we.event_id, we.created_at) SELECT created_at, action, slug, version FROM r ORDER BY created_at DESC LIMIT 50"
+        }
+      ]
+    }
+  ]
+}

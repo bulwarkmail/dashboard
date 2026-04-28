@@ -1,0 +1,24 @@
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# Build / deps
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Runtime data (anchored to repo root)
+/data/
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+
+# Editor / OS junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,94 @@
+{
+  "uid": "bulwark-website",
+  "title": "Bulwark / Website",
+  "tags": ["bulwark", "umami"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {"from": "now-30d", "to": "now"},
+  "templating": {
+    "list": [{
+      "name": "site",
+      "label": "Site",
+      "type": "query",
+      "datasource": {"type": "postgres", "uid": "umami_pg"},
+      "query": "SELECT name AS __text, website_id::text AS __value FROM website WHERE deleted_at IS NULL ORDER BY name",
+      "refresh": 2,
+      "current": {"text": "bulwarkmail.org", "value": "5bab70db-c5ba-44ce-a42e-f242ea7fe384"}
+    }]
+  },
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Pageviews (in range)",
+      "datasource": {"type": "postgres", "uid": "umami_pg"},
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area"},
+      "targets": [{"refId": "A", "format": "table", "rawSql": "SELECT count(*) AS value FROM website_event WHERE website_id = '$site'::uuid AND event_type = 1 AND $__timeFilter(created_at)"}]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Unique sessions",
+      "datasource": {"type": "postgres", "uid": "umami_pg"},
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area"},
+      "targets": [{"refId": "A", "format": "table", "rawSql": "SELECT count(DISTINCT session_id) AS value FROM website_event WHERE website_id = '$site'::uuid AND $__timeFilter(created_at)"}]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Custom events",
+      "datasource": {"type": "postgres", "uid": "umami_pg"},
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area"},
+      "targets": [{"refId": "A", "format": "table", "rawSql": "SELECT count(*) AS value FROM website_event WHERE website_id = '$site'::uuid AND event_type = 2 AND $__timeFilter(created_at)"}]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Pageviews / session",
+      "datasource": {"type": "postgres", "uid": "umami_pg"},
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 2}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area"},
+      "targets": [{"refId": "A", "format": "table", "rawSql": "SELECT count(*)::float / NULLIF(count(DISTINCT session_id), 0) AS value FROM website_event WHERE website_id = '$site'::uuid AND event_type = 1 AND $__timeFilter(created_at)"}]
+    },
+
+    {
+      "id": 10, "type": "timeseries", "title": "Pageviews & sessions over time",
+      "datasource": {"type": "postgres", "uid": "umami_pg"},
+      "gridPos": {"x": 0, "y": 4, "w": 24, "h": 8},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
+      "targets": [{
+        "refId": "A", "format": "time_series",
+        "rawSql": "SELECT $__timeGroup(created_at, $__interval) AS time, count(*) FILTER (WHERE event_type = 1) AS pageviews, count(DISTINCT session_id) AS sessions FROM website_event WHERE website_id = '$site'::uuid AND $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+      }]
+    },
+
+    {
+      "id": 20, "type": "table", "title": "Top pages",
+      "datasource": {"type": "postgres", "uid": "umami_pg"},
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 9},
+      "options": {"showHeader": true, "cellHeight": "sm"},
+      "targets": [{"refId": "A", "format": "table", "rawSql": "SELECT url_path AS path, count(*) AS views, count(DISTINCT session_id) AS sessions FROM website_event WHERE website_id = '$site'::uuid AND event_type = 1 AND $__timeFilter(created_at) GROUP BY url_path ORDER BY views DESC LIMIT 25"}]
+    },
+    {
+      "id": 21, "type": "table", "title": "Top referrers",
+      "datasource": {"type": "postgres", "uid": "umami_pg"},
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 9},
+      "options": {"showHeader": true, "cellHeight": "sm"},
+      "targets": [{"refId": "A", "format": "table", "rawSql": "SELECT coalesce(NULLIF(referrer_domain, ''), '(direct)') AS referrer, count(*) AS views, count(DISTINCT session_id) AS sessions FROM website_event WHERE website_id = '$site'::uuid AND event_type = 1 AND $__timeFilter(created_at) GROUP BY 1 ORDER BY views DESC LIMIT 25"}]
+    },
+
+    {
+      "id": 30, "type": "table", "title": "Custom events (counts)",
+      "datasource": {"type": "postgres", "uid": "umami_pg"},
+      "gridPos": {"x": 0, "y": 21, "w": 12, "h": 8},
+      "options": {"showHeader": true, "cellHeight": "sm"},
+      "targets": [{"refId": "A", "format": "table", "rawSql": "SELECT event_name, count(*) AS hits, count(DISTINCT session_id) AS sessions FROM website_event WHERE website_id = '$site'::uuid AND event_type = 2 AND event_name IS NOT NULL AND $__timeFilter(created_at) GROUP BY event_name ORDER BY hits DESC LIMIT 25"}]
+    },
+    {
+      "id": 31, "type": "table", "title": "Top countries (sessions)",
+      "datasource": {"type": "postgres", "uid": "umami_pg"},
+      "gridPos": {"x": 12, "y": 21, "w": 12, "h": 8},
+      "options": {"showHeader": true, "cellHeight": "sm"},
+      "targets": [{"refId": "A", "format": "table", "rawSql": "SELECT coalesce(s.country, '??') AS country, count(DISTINCT we.session_id) AS sessions FROM website_event we JOIN session s ON s.session_id = we.session_id WHERE we.website_id = '$site'::uuid AND $__timeFilter(we.created_at) GROUP BY country ORDER BY sessions DESC LIMIT 25"}]
+    }
+  ]
+}

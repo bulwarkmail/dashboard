@@ -1,0 +1,277 @@
+{
+  "uid": "bulwark-per-repo",
+  "title": "Bulwark / Per-repo",
+  "tags": ["bulwark"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-90d", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "repo",
+        "label": "Repo",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+        "query": "SELECT id FROM repos WHERE archived = false ORDER BY id",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false,
+        "current": {
+          "text": "bulwarkmail/webmail",
+          "value": "bulwarkmail/webmail"
+        }
+      }
+    ]
+  },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Stars",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT stars AS value FROM repo_snapshots WHERE repo_id = '$repo' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Open issues",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT open_issues AS value FROM repo_snapshots WHERE repo_id = '$repo' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Open PRs",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT open_prs AS value FROM repo_snapshots WHERE repo_id = '$repo' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Total commits",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT total_commits AS value FROM commit_snapshots WHERE repo_id = '$repo' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Commits (last 30d)",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT commits_last_30d AS value FROM commit_snapshots WHERE repo_id = '$repo' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Distinct authors (30d)",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT authors_last_30d AS value FROM commit_snapshots WHERE repo_id = '$repo' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Stars",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 5
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroup(ts, $__interval) AS time, max(stars) AS stars FROM repo_snapshots WHERE repo_id = '$repo' AND $__timeFilter(ts) GROUP BY 1 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Open issues / PRs",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroup(ts, $__interval) AS time, max(open_issues) AS issues, max(open_prs) AS prs FROM repo_snapshots WHERE repo_id = '$repo' AND $__timeFilter(ts) GROUP BY 1 ORDER BY 1"
+        }
+      ]
+    },
+
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Traffic - views & clones (daily)",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 0, "y": 12, "w": 24, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "bars", "fillOpacity": 60 }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT day::timestamptz AS time, count AS views, uniques AS unique_visitors FROM traffic_views_daily WHERE repo_id = '$repo' AND $__timeFilter(day::timestamptz) ORDER BY day"
+        },
+        {
+          "refId": "B",
+          "format": "time_series",
+          "rawSql": "SELECT day::timestamptz AS time, count AS clones, uniques AS unique_cloners FROM traffic_clones_daily WHERE repo_id = '$repo' AND $__timeFilter(day::timestamptz) ORDER BY day"
+        }
+      ]
+    },
+
+    {
+      "id": 30,
+      "type": "table",
+      "title": "Top paths (latest snapshot)",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH latest AS (SELECT max(ts) AS ts FROM traffic_paths WHERE repo_id = '$repo') SELECT path, title, count, uniques FROM traffic_paths WHERE repo_id = '$repo' AND ts = (SELECT ts FROM latest) ORDER BY count DESC LIMIT 25"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "table",
+      "title": "Top referrers (latest snapshot)",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH latest AS (SELECT max(ts) AS ts FROM traffic_referrers WHERE repo_id = '$repo') SELECT referrer, count, uniques FROM traffic_referrers WHERE repo_id = '$repo' AND ts = (SELECT ts FROM latest) ORDER BY count DESC LIMIT 25"
+        }
+      ]
+    },
+
+    {
+      "id": 40,
+      "type": "barchart",
+      "title": "LOC by language",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 9 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": {
+        "orientation": "horizontal",
+        "stacking": "none",
+        "showValue": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH latest AS (SELECT max(ts) AS ts FROM loc_snapshots WHERE repo_id = '$repo') SELECT language, code FROM loc_snapshots WHERE repo_id = '$repo' AND ts = (SELECT ts FROM latest) AND language NOT IN ('Total','ALL','License','Plain Text') ORDER BY code DESC LIMIT 15"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "type": "table",
+      "title": "Releases",
+      "datasource": { "type": "postgres", "uid": "dashboard_pg" },
+      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 9 },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT tag, name, published_at, download_count AS downloads, prerelease FROM releases WHERE repo_id = '$repo' AND draft = false ORDER BY published_at DESC NULLS LAST LIMIT 25"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${TELEMETRY_DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${TELEMETRY_DOMAIN};
+
+    ssl_certificate /etc/letsencrypt/live/${TELEMETRY_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${TELEMETRY_DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Robots-Tag "noindex, nofollow" always;
+
+    # PRIVACY: nginx logs nothing for this vhost. No IPs, no User-Agents,
+    # no paths, no anything. The telemetry collector itself also logs no
+    # request metadata.
+    #
+    # error_log → /dev/null because nginx writes the client IP into
+    # error-level lines (e.g. "client intended to send too large body")
+    # even when access_log is off. Daemon-level nginx errors (cert expiry,
+    # config reload) still go to the global /var/log/nginx/error.log,
+    # which does not contain per-request client IPs. The collector logs
+    # outcomes via pm2 to /var/log/bulwark-dashboard/telemetry.{out,err}.log.
+    access_log off;
+    error_log /dev/null crit;
+
+    client_max_body_size 8k;
+
+    location = /v1/heartbeat {
+        proxy_pass http://127.0.0.1:3008/v1/heartbeat;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        # Don't forward client IPs — the collector should never see them.
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-For "";
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /health {
+        proxy_pass http://127.0.0.1:3008/health;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+
+    location / {
+        return 404;
+    }
+}

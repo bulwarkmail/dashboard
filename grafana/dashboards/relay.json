@@ -1,0 +1,104 @@
+{
+  "uid": "bulwark-relay",
+  "title": "Bulwark / Relay",
+  "tags": ["bulwark", "relay"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-24h", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Active subscriptions",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area"},
+      "targets": [{"refId": "A", "expr": "relay_subscriptions_active"}]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Pushes / 5m",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area"},
+      "targets": [{"refId": "A", "expr": "sum(increase(relay_pushes_received_total[5m]))"}]
+    },
+    {
+      "id": 3, "type": "stat", "title": "FCM error rate (5m)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [{"value": 0, "color": "green"}, {"value": 0.05, "color": "yellow"}, {"value": 0.2, "color": "red"}]}}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [{"refId": "A", "expr": "sum(increase(relay_pushes_forwarded_total{result!~\"ok|unregistered\"}[5m])) / clamp_min(sum(increase(relay_pushes_forwarded_total[5m])), 1)"}]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Relay process uptime",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area"},
+      "targets": [{"refId": "A", "expr": "time() - relay_process_start_time_seconds"}]
+    },
+
+    {
+      "id": 10, "type": "timeseries", "title": "Pushes by outcome",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 20, "stacking": {"mode": "normal"}}}},
+      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}},
+      "targets": [{"refId": "A", "expr": "sum by (result) (rate(relay_pushes_forwarded_total[5m]))", "legendFormat": "{{result}}"}]
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "HTTP requests by route + status",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
+      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}},
+      "targets": [{"refId": "A", "expr": "sum by (route, status) (rate(relay_http_requests_total[5m]))", "legendFormat": "{{route}} {{status}}"}]
+    },
+
+    {
+      "id": 20, "type": "timeseries", "title": "FCM send latency (p50 / p95 / p99)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 5}}},
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(relay_fcm_send_duration_seconds_bucket[5m])))", "legendFormat": "p50"},
+        {"refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(relay_fcm_send_duration_seconds_bucket[5m])))", "legendFormat": "p95"},
+        {"refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(relay_fcm_send_duration_seconds_bucket[5m])))", "legendFormat": "p99"}
+      ]
+    },
+    {
+      "id": 21, "type": "timeseries", "title": "HTTP latency (p50 / p95) by route",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 5}}},
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.50, sum by (route, le) (rate(relay_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p50 {{route}}"},
+        {"refId": "B", "expr": "histogram_quantile(0.95, sum by (route, le) (rate(relay_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95 {{route}}"}
+      ]
+    },
+
+    {
+      "id": 30, "type": "timeseries", "title": "Subscription churn",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 20, "w": 12, "h": 7},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 60}}},
+      "targets": [
+        {"refId": "A", "expr": "sum(increase(relay_subscriptions_registered_total[5m]))", "legendFormat": "registered"},
+        {"refId": "B", "expr": "sum by (reason) (increase(relay_subscriptions_unregistered_total[5m]))", "legendFormat": "unregistered ({{reason}})"}
+      ]
+    },
+    {
+      "id": 31, "type": "timeseries", "title": "Memory & event-loop lag",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 12, "y": 20, "w": 12, "h": 7},
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "targets": [
+        {"refId": "A", "expr": "relay_process_resident_memory_bytes / 1024 / 1024", "legendFormat": "RSS MiB"},
+        {"refId": "B", "expr": "relay_nodejs_eventloop_lag_p95_seconds * 1000", "legendFormat": "loop p95 ms"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,239 @@
+{
+  "uid": "bulwark-self-hosted",
+  "title": "Bulwark / Self-hosted adoption",
+  "tags": ["bulwark", "telemetry"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": { "from": "now-90d", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active instances (last 7d)",
+      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(DISTINCT instance_id) AS value FROM heartbeats WHERE day >= current_date - interval '7 days'"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Active instances (last 30d)",
+      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(DISTINCT instance_id) AS value FROM heartbeats WHERE day >= current_date - interval '30 days'"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Total ever seen",
+      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS value FROM instance_meta"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "New instances (last 7d)",
+      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS value FROM instance_meta WHERE first_seen >= current_date - interval '7 days'"
+        }
+      ]
+    },
+
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Active instances per day",
+      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "bars", "fillOpacity": 80 }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT day::timestamptz AS time, count(DISTINCT instance_id) AS active FROM heartbeats WHERE $__timeFilter(day::timestamptz) GROUP BY day ORDER BY day"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "New instances per day",
+      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "bars", "fillOpacity": 80 }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT first_seen::timestamptz AS time, count(*) AS new_instances FROM instance_meta WHERE $__timeFilter(first_seen::timestamptz) GROUP BY first_seen ORDER BY first_seen"
+        }
+      ]
+    },
+
+    {
+      "id": 20,
+      "type": "piechart",
+      "title": "Platform mix (last 7d)",
+      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
+      "gridPos": { "x": 0, "y": 12, "w": 8, "h": 8 },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": ["value", "percent"]
+        },
+        "pieType": "donut"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT (payload->>'platform') AS platform, count(DISTINCT instance_id) AS instances FROM heartbeats WHERE day >= current_date - interval '7 days' GROUP BY 1 ORDER BY instances DESC"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "piechart",
+      "title": "OS family (last 7d)",
+      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
+      "gridPos": { "x": 8, "y": 12, "w": 8, "h": 8 },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": ["value", "percent"]
+        },
+        "pieType": "donut"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT (payload->>'os_family') AS os, count(DISTINCT instance_id) AS instances FROM heartbeats WHERE day >= current_date - interval '7 days' GROUP BY 1 ORDER BY instances DESC"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "barchart",
+      "title": "Account-count buckets (last 7d)",
+      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
+      "gridPos": { "x": 16, "y": 12, "w": 8, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": { "orientation": "horizontal", "showValue": "auto" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT (payload->'counts'->>'accounts') AS bucket, count(DISTINCT instance_id) AS instances FROM heartbeats WHERE day >= current_date - interval '7 days' GROUP BY 1 ORDER BY CASE bucket WHEN '0' THEN 0 WHEN '1' THEN 1 WHEN '2-5' THEN 2 WHEN '6-10' THEN 3 WHEN '11-50' THEN 4 WHEN '51-200' THEN 5 WHEN '201+' THEN 6 ELSE 9 END"
+        }
+      ]
+    },
+
+    {
+      "id": 30,
+      "type": "barchart",
+      "title": "Version distribution (latest snapshot per instance, last 7d)",
+      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 9 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": { "orientation": "horizontal", "showValue": "auto" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC) SELECT (payload->>'version') AS version, count(*) AS instances FROM latest GROUP BY 1 ORDER BY instances DESC LIMIT 25"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "barchart",
+      "title": "Feature adoption (% of active instances)",
+      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 9 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1 }
+      },
+      "options": { "orientation": "horizontal", "showValue": "auto" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC), agg AS (SELECT count(*)::float AS total, sum(CASE WHEN (payload->'features'->>'calendar')::boolean THEN 1 ELSE 0 END) AS calendar, sum(CASE WHEN (payload->'features'->>'contacts')::boolean THEN 1 ELSE 0 END) AS contacts, sum(CASE WHEN (payload->'features'->>'files')::boolean THEN 1 ELSE 0 END) AS files, sum(CASE WHEN (payload->'features'->>'extensions')::boolean THEN 1 ELSE 0 END) AS extensions, sum(CASE WHEN (payload->'features'->>'push_relay')::boolean THEN 1 ELSE 0 END) AS push_relay, sum(CASE WHEN (payload->'features'->>'oauth_enabled')::boolean THEN 1 ELSE 0 END) AS oauth, sum(CASE WHEN (payload->'features'->>'smime_enabled')::boolean THEN 1 ELSE 0 END) AS smime, sum(CASE WHEN (payload->'features'->>'webdav_enabled')::boolean THEN 1 ELSE 0 END) AS webdav FROM latest) SELECT 'calendar' AS feature, calendar/NULLIF(total,0) AS pct FROM agg UNION ALL SELECT 'contacts', contacts/NULLIF(total,0) FROM agg UNION ALL SELECT 'files', files/NULLIF(total,0) FROM agg UNION ALL SELECT 'extensions', extensions/NULLIF(total,0) FROM agg UNION ALL SELECT 'push_relay', push_relay/NULLIF(total,0) FROM agg UNION ALL SELECT 'oauth_enabled', oauth/NULLIF(total,0) FROM agg UNION ALL SELECT 'smime_enabled', smime/NULLIF(total,0) FROM agg UNION ALL SELECT 'webdav_enabled', webdav/NULLIF(total,0) FROM agg ORDER BY pct DESC NULLS LAST"
+        }
+      ]
+    },
+
+    {
+      "id": 40,
+      "type": "table",
+      "title": "Recent heartbeats (last 50 raw - only if not yet aggregated out)",
+      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
+      "gridPos": { "x": 0, "y": 29, "w": 24, "h": 9 },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT received_at, day, payload->>'version' AS version, payload->>'platform' AS platform, payload->>'os_family' AS os, payload->'counts'->>'accounts' AS accounts FROM heartbeats ORDER BY received_at DESC LIMIT 50"
+        }
+      ]
+    }
+  ]
+}

@@ -15,10 +15,8 @@ const FEATURE_KEYS = [
   'contacts',
   'files',
   'extensions',
-  'push_relay',
   'oauth_enabled',
   'smime_enabled',
-  'webdav_enabled',
 ] as const;
 
 export interface CleanHeartbeat {

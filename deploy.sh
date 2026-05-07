@@ -32,18 +32,26 @@ if [ ! -f .env ]; then
   sed -i "s|^GRAFANA_ADMIN_PASSWORD=.*|GRAFANA_ADMIN_PASSWORD=$(rand)|"             .env
   sed -i "s|^UMAMI_APP_SECRET=.*|UMAMI_APP_SECRET=$(rand)|"                         .env
   sed -i "s|^BASIC_AUTH_PASSWORD=.*|BASIC_AUTH_PASSWORD=$(rand)|"                   .env
-  log "Wrote .env. Edit GRAFANA_DOMAIN / UMAMI_DOMAIN / TELEMETRY_DOMAIN / LE_EMAIL, then re-run."
+  log "Wrote .env. Edit GRAFANA_DOMAIN / UMAMI_DOMAIN / TELEMETRY_DOMAIN / VERSION_DOMAIN / LE_EMAIL, then re-run."
   exit 0
 fi
 set -a; . ./.env; set +a
 
 # Required from .env (no defaults — these are site-specific).
 : "${GRAFANA_DOMAIN:?set GRAFANA_DOMAIN in .env}"
+: "${GRAFANA_PUBLIC_DOMAIN:?set GRAFANA_PUBLIC_DOMAIN in .env}"
 : "${UMAMI_DOMAIN:?set UMAMI_DOMAIN in .env}"
 : "${TELEMETRY_DOMAIN:?set TELEMETRY_DOMAIN in .env}"
-: "${LE_EMAIL:?set LE_EMAIL in .env (used for Let's Encrypt registration)}"
-: "${BASIC_AUTH_USER:?set BASIC_AUTH_USER in .env}"
-: "${BASIC_AUTH_PASSWORD:?set BASIC_AUTH_PASSWORD in .env}"
+: "${VERSION_DOMAIN:?set VERSION_DOMAIN in .env}"
+: "${LE_EMAIL:?set LE_EMAIL in .env, used for Lets Encrypt registration}"
+: "${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}"
+# GRAFANA_PUBLIC_DASHBOARD_TOKEN is captured below from the Grafana API on
+# first deploy and written back to .env. Default to a stub so envsubst
+# doesn't blank the redirect target before bootstrap finishes.
+: "${GRAFANA_PUBLIC_DASHBOARD_TOKEN:=pending}"
+# Legacy basic-auth fields are no longer used; tolerate their absence.
+: "${BASIC_AUTH_USER:=admin}"
+: "${BASIC_AUTH_PASSWORD:=}"
 
 command -v envsubst >/dev/null || die "envsubst not found — install gettext-base"
 
@@ -54,21 +62,19 @@ chown -R 472:472   data/grafana
 chown -R 65534:65534 data/prometheus
 
 # --- 3. nginx vhosts -------------------------------------------------------
-mkdir -p "$HTPASSWD_DIR"
-if [ ! -f "$HTPASSWD_DIR/grafana" ]; then
-  log "Creating htpasswd for grafana vhost"
-  command -v htpasswd >/dev/null || { apt-get update && apt-get install -y apache2-utils; }
-  htpasswd -bc "$HTPASSWD_DIR/grafana" "$BASIC_AUTH_USER" "$BASIC_AUTH_PASSWORD"
-  chmod 640 "$HTPASSWD_DIR/grafana"
-  chown root:www-data "$HTPASSWD_DIR/grafana"
-fi
+# Drop any leftover htpasswd from older deploys — internal Grafana now
+# sits behind Grafana's own login, no nginx basic auth.
+rm -f "$HTPASSWD_DIR/grafana"
 
-# Render template → /etc/nginx/sites-available/<domain>. Only substitute the
-# variable we name, so nginx's own $host / $remote_addr / etc. survive.
+# Render template → /etc/nginx/sites-available/<domain>. Pass the names of
+# every variable that should be substituted; everything else (including
+# nginx's own $host / $remote_addr) is left literal.
 render_vhost() {
-  local template="$1" domain="$2" varname="$3"
+  local template="$1" domain="$2"; shift 2
+  local vars=""
+  for v in "$@"; do vars="$vars \${$v}"; done
   log "Rendering nginx vhost: $domain"
-  envsubst "\${$varname}" < "$APP_DIR/nginx/$template" > "$NGINX_SITES_AVAIL/$domain"
+  envsubst "$vars" < "$APP_DIR/nginx/$template" > "$NGINX_SITES_AVAIL/$domain"
   ln -sf "$NGINX_SITES_AVAIL/$domain" "$NGINX_SITES_ENABLED/$domain"
 }
 
@@ -97,12 +103,16 @@ EOF
 }
 
 ensure_cert "$GRAFANA_DOMAIN"
+ensure_cert "$GRAFANA_PUBLIC_DOMAIN"
 ensure_cert "$UMAMI_DOMAIN"
 ensure_cert "$TELEMETRY_DOMAIN"
+ensure_cert "$VERSION_DOMAIN"
 
-render_vhost grafana.conf.template   "$GRAFANA_DOMAIN"   GRAFANA_DOMAIN
-render_vhost umami.conf.template     "$UMAMI_DOMAIN"     UMAMI_DOMAIN
-render_vhost telemetry.conf.template "$TELEMETRY_DOMAIN" TELEMETRY_DOMAIN
+render_vhost grafana.conf.template        "$GRAFANA_DOMAIN"        GRAFANA_DOMAIN
+render_vhost grafana-public.conf.template "$GRAFANA_PUBLIC_DOMAIN" GRAFANA_PUBLIC_DOMAIN GRAFANA_PUBLIC_DASHBOARD_TOKEN
+render_vhost umami.conf.template          "$UMAMI_DOMAIN"          UMAMI_DOMAIN
+render_vhost telemetry.conf.template      "$TELEMETRY_DOMAIN"      TELEMETRY_DOMAIN
+render_vhost version.conf.template        "$VERSION_DOMAIN"        VERSION_DOMAIN
 
 log "Validating nginx config"
 nginx -t
@@ -172,6 +182,87 @@ if [ -d "$APP_DIR/telemetry-collector" ]; then
   fi
 fi
 
+# --- 8b. version-server (pm2) ---------------------------------------------
+if [ -d "$APP_DIR/version-server" ]; then
+  log "Building version-server"
+  mkdir -p /var/log/bulwark-dashboard
+  pushd "$APP_DIR/version-server" >/dev/null
+  if [ -f package-lock.json ]; then
+    npm ci --no-audit --no-fund
+  else
+    npm install --no-audit --no-fund
+  fi
+  npm run build
+  popd >/dev/null
+  if pm2 describe bulwark-version-server >/dev/null 2>&1; then
+    log "Reloading version-server"
+    pm2 reload "$APP_DIR/version-server/ecosystem.config.cjs" --update-env
+  else
+    log "Starting version-server"
+    pm2 start "$APP_DIR/version-server/ecosystem.config.cjs"
+    pm2 save
+  fi
+fi
+
+# --- 9. Bootstrap public-dashboard share token ----------------------------
+# Wait for Grafana to come up, then ensure the "bulwark-public" dashboard
+# has a public share enabled and capture its access token. Writes the token
+# back into .env and re-renders the public vhost so the redirect points at
+# the right URL.
+bootstrap_public_share() {
+  local uid="bulwark-public"
+  local base="http://127.0.0.1:3006"
+  local auth="admin:$GRAFANA_ADMIN_PASSWORD"
+
+  # Wait for Grafana itself.
+  for i in {1..30}; do
+    if curl -sf -u "$auth" "$base/api/health" >/dev/null 2>&1; then break; fi
+    sleep 2
+  done
+  # Wait for the bulwark-public dashboard to be picked up by the file
+  # provisioner (default scan interval is 30s).
+  for i in {1..20}; do
+    if curl -sf -u "$auth" "$base/api/dashboards/uid/$uid" >/dev/null 2>&1; then break; fi
+    sleep 3
+  done
+  if ! curl -sf -u "$auth" "$base/api/dashboards/uid/$uid" >/dev/null 2>&1; then
+    log "Public dashboard '$uid' not provisioned after 60s — skipping share bootstrap"
+    return 0
+  fi
+
+  local existing token=""
+  existing=$(curl -sf -u "$auth" "$base/api/dashboards/uid/$uid/public-dashboards" 2>/dev/null || true)
+  token=$(printf '%s' "$existing" | grep -oE '"accessToken":"[^"]+"' | head -1 | sed -e 's/.*:"//' -e 's/".*//')
+
+  if [ -z "$token" ]; then
+    log "Creating public share for dashboard '$uid'"
+    local created
+    created=$(curl -sf -u "$auth" -X POST -H "content-type: application/json" \
+      -d '{"isEnabled":true,"annotationsEnabled":false,"timeSelectionEnabled":false}' \
+      "$base/api/dashboards/uid/$uid/public-dashboards" || true)
+    token=$(printf '%s' "$created" | grep -oE '"accessToken":"[^"]+"' | head -1 | sed -e 's/.*:"//' -e 's/".*//')
+  fi
+
+  if [ -z "$token" ]; then
+    log "WARN: could not obtain public-dashboard token; redirect on $GRAFANA_PUBLIC_DOMAIN will 404 until next deploy"
+    return 0
+  fi
+
+  if ! grep -qE "^GRAFANA_PUBLIC_DASHBOARD_TOKEN=" .env; then
+    echo "GRAFANA_PUBLIC_DASHBOARD_TOKEN=$token" >> .env
+  else
+    sed -i "s|^GRAFANA_PUBLIC_DASHBOARD_TOKEN=.*|GRAFANA_PUBLIC_DASHBOARD_TOKEN=$token|" .env
+  fi
+  GRAFANA_PUBLIC_DASHBOARD_TOKEN="$token"
+
+  render_vhost grafana-public.conf.template "$GRAFANA_PUBLIC_DOMAIN" GRAFANA_PUBLIC_DOMAIN GRAFANA_PUBLIC_DASHBOARD_TOKEN
+  nginx -t && systemctl reload nginx
+  log "Public dashboard token: $token"
+}
+bootstrap_public_share
+
 log "Done."
-log "Grafana:  https://$GRAFANA_DOMAIN   (basic auth: $BASIC_AUTH_USER / see .env)"
-log "Umami:    https://$UMAMI_DOMAIN     (first-run admin / umami)"
+log "Grafana (admin): https://$GRAFANA_DOMAIN  (Grafana login)"
+log "Public stats:    https://$GRAFANA_PUBLIC_DOMAIN  (no auth)"
+log "Umami:           https://$UMAMI_DOMAIN     (first-run admin / umami)"
+log "Version server:  https://$VERSION_DOMAIN/?v=1.0.0"

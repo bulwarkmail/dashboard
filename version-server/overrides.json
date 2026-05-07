@@ -1,0 +1,5 @@
+{
+  "_doc": "Manual severity flags merged on top of the GitHub releases list. Edit, redeploy, and the next hourly refresh picks it up. Versions below `minimumSupported` are reported as deprecated. Per-version `severities` entries either flag a release as a security update (use `severity: \"security\"` and optionally an `advisory: \"GHSA-...\"`) or mark an old release as deprecated (`severity: \"deprecated\"`).",
+  "minimumSupported": "1.0.0",
+  "severities": {}
+}

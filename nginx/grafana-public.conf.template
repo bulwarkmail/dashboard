@@ -1,0 +1,92 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${GRAFANA_PUBLIC_DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${GRAFANA_PUBLIC_DOMAIN};
+
+    ssl_certificate /etc/letsencrypt/live/${GRAFANA_PUBLIC_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${GRAFANA_PUBLIC_DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+
+    # CSS injected into HTML responses to hide Grafana's public-dashboard
+    # banner + footer + "Powered by Grafana" link. Best-effort; class names
+    # can change between Grafana versions.
+    sub_filter_once off;
+    sub_filter '</head>' '<style>[data-testid="public-dashboard-footer"],[data-testid="public-dashboard-banner"],a[href*="grafana.com"],[class*="PublicDashboardFooter"],[class*="public-dashboard-footer"],[class*="public-dashboard-banner"]{display:none !important}body[class*="public-dashboard"] header,body[class*="public-dashboard"] [class*="page-toolbar"]{display:none !important}</style></head>';
+
+    # Root → redirect to the published dashboard. The token is captured
+    # by deploy.sh from the Grafana API and written into .env.
+    location = / {
+        return 302 /public-dashboards/${GRAFANA_PUBLIC_DASHBOARD_TOKEN};
+    }
+
+    # Public dashboard pages.
+    location /public-dashboards/ {
+        proxy_pass http://127.0.0.1:3006;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # sub_filter requires uncompressed responses.
+        proxy_set_header Accept-Encoding "";
+    }
+
+    # Public-dashboard query API — Grafana hits these for panel data.
+    location /api/public/ {
+        proxy_pass http://127.0.0.1:3006;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Static assets (JS / CSS / fonts / images Grafana ships).
+    location /public/ {
+        proxy_pass http://127.0.0.1:3006;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Avatar / branding images.
+    location /avatar/ {
+        proxy_pass http://127.0.0.1:3006;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+
+    # Live websocket — public dashboards subscribe to refresh ticks here.
+    location /api/live/ {
+        proxy_pass http://127.0.0.1:3006;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Block everything else — admin paths, login, plugins API.
+    location / {
+        return 404;
+    }
+}

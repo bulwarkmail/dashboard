@@ -4,9 +4,9 @@
   "tags": ["bulwark", "telemetry"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "5m",
-  "time": { "from": "now-90d", "to": "now" },
+  "time": { "from": "now-30d", "to": "now" },
   "templating": { "list": [] },
   "annotations": { "list": [] },
   "panels": [
@@ -99,7 +99,7 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT day::timestamptz AS time, count(DISTINCT instance_id) AS active FROM heartbeats WHERE $__timeFilter(day::timestamptz) GROUP BY day ORDER BY day"
+          "rawSql": "WITH days AS (SELECT generate_series(date_trunc('day', $__timeFrom()::timestamptz)::date, date_trunc('day', $__timeTo()::timestamptz)::date, interval '1 day')::date AS day) SELECT d.day::timestamptz AS time, COALESCE(count(DISTINCT h.instance_id), 0) AS active FROM days d LEFT JOIN heartbeats h ON h.day = d.day GROUP BY d.day ORDER BY d.day"
         }
       ]
     },
@@ -119,7 +119,7 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT first_seen::timestamptz AS time, count(*) AS new_instances FROM instance_meta WHERE $__timeFilter(first_seen::timestamptz) GROUP BY first_seen ORDER BY first_seen"
+          "rawSql": "WITH days AS (SELECT generate_series(date_trunc('day', $__timeFrom()::timestamptz)::date, date_trunc('day', $__timeTo()::timestamptz)::date, interval '1 day')::date AS day) SELECT d.day::timestamptz AS time, COALESCE(count(im.instance_id), 0) AS new_instances FROM days d LEFT JOIN instance_meta im ON im.first_seen = d.day GROUP BY d.day ORDER BY d.day"
         }
       ]
     },
@@ -136,13 +136,14 @@
           "placement": "right",
           "values": ["value", "percent"]
         },
-        "pieType": "donut"
+        "pieType": "donut",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
       },
       "targets": [
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT (payload->>'platform') AS platform, count(DISTINCT instance_id) AS instances FROM heartbeats WHERE day >= current_date - interval '7 days' GROUP BY 1 ORDER BY instances DESC"
+          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC) SELECT count(*) FILTER (WHERE (payload->>'platform') = 'docker')  AS docker, count(*) FILTER (WHERE (payload->>'platform') = 'bare')    AS bare, count(*) FILTER (WHERE (payload->>'platform') = 'k8s')     AS k8s, count(*) FILTER (WHERE (payload->>'platform') = 'unknown') AS unknown FROM latest"
         }
       ]
     },
@@ -158,13 +159,14 @@
           "placement": "right",
           "values": ["value", "percent"]
         },
-        "pieType": "donut"
+        "pieType": "donut",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
       },
       "targets": [
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT (payload->>'os_family') AS os, count(DISTINCT instance_id) AS instances FROM heartbeats WHERE day >= current_date - interval '7 days' GROUP BY 1 ORDER BY instances DESC"
+          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC) SELECT count(*) FILTER (WHERE (payload->>'os_family') = 'linux')   AS linux, count(*) FILTER (WHERE (payload->>'os_family') = 'darwin')  AS darwin, count(*) FILTER (WHERE (payload->>'os_family') = 'windows') AS windows, count(*) FILTER (WHERE (payload->>'os_family') = 'unknown') AS unknown FROM latest"
         }
       ]
     },
@@ -175,12 +177,12 @@
       "datasource": { "type": "postgres", "uid": "telemetry_pg" },
       "gridPos": { "x": 16, "y": 12, "w": 8, "h": 8 },
       "fieldConfig": { "defaults": { "unit": "short" } },
-      "options": { "orientation": "horizontal", "showValue": "auto" },
+      "options": { "orientation": "horizontal", "showValue": "auto", "xTickLabelRotation": 0 },
       "targets": [
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT (payload->'counts'->>'accounts') AS bucket, count(DISTINCT instance_id) AS instances FROM heartbeats WHERE day >= current_date - interval '7 days' GROUP BY 1 ORDER BY CASE bucket WHEN '0' THEN 0 WHEN '1' THEN 1 WHEN '2-5' THEN 2 WHEN '6-10' THEN 3 WHEN '11-50' THEN 4 WHEN '51-200' THEN 5 WHEN '201+' THEN 6 ELSE 9 END"
+          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC), per_bucket AS (SELECT (payload->'counts'->>'accounts') AS bucket, count(*) AS instances FROM latest GROUP BY 1) SELECT b.bucket, COALESCE(p.instances, 0) AS instances FROM (VALUES ('0',0),('1',1),('2-5',2),('6-10',3),('11-50',4),('51-200',5),('201+',6)) AS b(bucket, ord) LEFT JOIN per_bucket p USING (bucket) ORDER BY b.ord"
         }
       ]
     },
@@ -197,25 +199,25 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC) SELECT (payload->>'version') AS version, count(*) AS instances FROM latest GROUP BY 1 ORDER BY instances DESC LIMIT 25"
+          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC), counted AS (SELECT (payload->>'version') AS version, count(*) AS instances FROM latest GROUP BY 1) SELECT version, instances FROM counted ORDER BY string_to_array(regexp_replace(version, '[+-].*$', ''), '.')::int[] DESC NULLS LAST, version DESC LIMIT 25"
         }
       ]
     },
     {
       "id": 31,
       "type": "barchart",
-      "title": "Feature adoption (% of active instances)",
+      "title": "Feature adoption (% of active instances, last 7d)",
       "datasource": { "type": "postgres", "uid": "telemetry_pg" },
       "gridPos": { "x": 12, "y": 20, "w": 12, "h": 9 },
       "fieldConfig": {
-        "defaults": { "unit": "percentunit", "min": 0, "max": 1 }
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1, "decimals": 2 }
       },
       "options": { "orientation": "horizontal", "showValue": "auto" },
       "targets": [
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC), agg AS (SELECT count(*)::float AS total, sum(CASE WHEN (payload->'features'->>'calendar')::boolean THEN 1 ELSE 0 END) AS calendar, sum(CASE WHEN (payload->'features'->>'contacts')::boolean THEN 1 ELSE 0 END) AS contacts, sum(CASE WHEN (payload->'features'->>'files')::boolean THEN 1 ELSE 0 END) AS files, sum(CASE WHEN (payload->'features'->>'extensions')::boolean THEN 1 ELSE 0 END) AS extensions, sum(CASE WHEN (payload->'features'->>'push_relay')::boolean THEN 1 ELSE 0 END) AS push_relay, sum(CASE WHEN (payload->'features'->>'oauth_enabled')::boolean THEN 1 ELSE 0 END) AS oauth, sum(CASE WHEN (payload->'features'->>'smime_enabled')::boolean THEN 1 ELSE 0 END) AS smime, sum(CASE WHEN (payload->'features'->>'webdav_enabled')::boolean THEN 1 ELSE 0 END) AS webdav FROM latest) SELECT 'calendar' AS feature, calendar/NULLIF(total,0) AS pct FROM agg UNION ALL SELECT 'contacts', contacts/NULLIF(total,0) FROM agg UNION ALL SELECT 'files', files/NULLIF(total,0) FROM agg UNION ALL SELECT 'extensions', extensions/NULLIF(total,0) FROM agg UNION ALL SELECT 'push_relay', push_relay/NULLIF(total,0) FROM agg UNION ALL SELECT 'oauth_enabled', oauth/NULLIF(total,0) FROM agg UNION ALL SELECT 'smime_enabled', smime/NULLIF(total,0) FROM agg UNION ALL SELECT 'webdav_enabled', webdav/NULLIF(total,0) FROM agg ORDER BY pct DESC NULLS LAST"
+          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC), feats AS (SELECT key AS feature, count(*) FILTER (WHERE value::text = 'true') AS enabled, count(*) AS total FROM latest, jsonb_each_text(payload->'features') GROUP BY key) SELECT feature, CASE WHEN total = 0 THEN 0 ELSE enabled::float / total END AS pct FROM feats WHERE feature IN ('calendar','contacts','files','extensions','oauth_enabled','smime_enabled') ORDER BY pct DESC, feature"
         }
       ]
     },
@@ -223,7 +225,7 @@
     {
       "id": 40,
       "type": "table",
-      "title": "Recent heartbeats (last 50 raw - only if not yet aggregated out)",
+      "title": "Recent heartbeats",
       "datasource": { "type": "postgres", "uid": "telemetry_pg" },
       "gridPos": { "x": 0, "y": 29, "w": 24, "h": 9 },
       "options": { "showHeader": true, "cellHeight": "sm" },
@@ -231,7 +233,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT received_at, day, payload->>'version' AS version, payload->>'platform' AS platform, payload->>'os_family' AS os, payload->'counts'->>'accounts' AS accounts FROM heartbeats ORDER BY received_at DESC LIMIT 50"
+          "rawSql": "SELECT received_at, day, payload->>'version' AS version, payload->>'platform' AS platform, payload->>'os_family' AS os, payload->'counts'->>'accounts' AS accounts, payload->'counts'->>'extensions_installed' AS exts, payload->>'uptime_days' AS uptime_days FROM heartbeats ORDER BY received_at DESC LIMIT 50"
         }
       ]
     }

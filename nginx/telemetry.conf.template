@@ -58,6 +58,32 @@ server {
         proxy_set_header Host $host;
     }
 
+    location = / {
+        default_type "text/html; charset=utf-8";
+        return 200 '<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Bulwark Telemetry</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.55 system-ui, -apple-system, Segoe UI, sans-serif; max-width: 36rem; margin: 4rem auto; padding: 0 1.25rem; }
+  h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+  p { margin: 0 0 1rem; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<h1>Bulwark Telemetry</h1>
+<p>When a self-hosted Bulwark webmail instance opts in, it sends one anonymous heartbeat a day. That&#39;s the whole job.</p>
+<p>It sees no email, no users, no IPs, no hostnames. Just a software version, deployment shape, which features are on, and bucketed account counts.</p>
+<p>Details: <a href="https://bulwarkmail.org/docs/legal/privacy/telemetry">https://bulwarkmail.org/docs/legal/privacy/telemetry</a></p>
+</body>
+</html>';
+    }
+
     location / {
         return 404;
     }

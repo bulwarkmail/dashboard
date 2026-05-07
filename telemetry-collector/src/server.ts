@@ -67,6 +67,21 @@ const server = http.createServer(async (req, res) => {
            received_at = now()`,
         [clean.instance_id, day, JSON.stringify(clean)],
       );
+      // Maintain instance_meta inline so panels keyed off first/last/days_seen
+      // are correct in real time without waiting for the daily rollup.
+      await pool.query(
+        `INSERT INTO instance_meta (instance_id, first_seen, last_seen, days_seen)
+         VALUES ($1, $2, $2, 1)
+         ON CONFLICT (instance_id) DO UPDATE SET
+           last_seen = GREATEST(instance_meta.last_seen, EXCLUDED.last_seen),
+           first_seen = LEAST(instance_meta.first_seen, EXCLUDED.first_seen),
+           days_seen = (
+             SELECT count(DISTINCT day)::int
+             FROM heartbeats
+             WHERE heartbeats.instance_id = EXCLUDED.instance_id
+           )`,
+        [clean.instance_id, day],
+      );
       return send(res, 200, { ok: true });
     }
 

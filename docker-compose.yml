@@ -99,6 +99,9 @@ services:
       DATABASE_URL: postgresql://umami:${POSTGRES_UMAMI_PASSWORD}@postgres:5432/umami
       APP_SECRET: ${UMAMI_APP_SECRET}
       DISABLE_TELEMETRY: "1"
+      # New session hash every day (Umami's default is every month), as the
+      # website's privacy page promises.
+      SALT_ROTATION: day
     ports:
       - "127.0.0.1:3007:3000"
 

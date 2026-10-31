@@ -1,5 +1,30 @@
 {
   "_doc": "Manual severity flags merged on top of the GitHub releases list. Edit, redeploy, and the next hourly refresh picks it up. Versions below `minimumSupported` are reported as deprecated. Per-version `severities` entries either flag a release as a security update (use `severity: \"security\"` and optionally an `advisory: \"GHSA-...\"`) or mark an old release as deprecated (`severity: \"deprecated\"`).",
   "minimumSupported": "1.0.0",
-  "severities": {}
+  "severities": {
+    "1.4.10": {
+      "severity": "security",
+      "advisory": "GHSA-4356-876g-rfmh, GHSA-47pm-883h-885r"
+    },
+    "1.4.11": {
+      "severity": "security",
+      "advisory": "GHSA-6q52-98cr-qx65, GHSA-7pj2-232x-6698, GHSA-v6w6-338p-p256"
+    },
+    "1.9.0": {
+      "severity": "security",
+      "advisory": "GHSA-m7j8-f5q4-vj7x"
+    },
+    "1.9.2": {
+      "severity": "security",
+      "advisory": "GHSA-24w9-8r42-8jwm"
+    },
+    "1.10.0": {
+      "severity": "security",
+      "advisory": "GHSA-xvjh-v9c6-qcvc, GHSA-96cx-gx36-3g79, GHSA-cqqx-mjcf-mh55, GHSA-wxcm-j4jc-9fxq, GHSA-qvr9-m8cq-7wvg, GHSA-w38p-hpqv-g89c"
+    },
+    "1.16.0": {
+      "severity": "security",
+      "advisory": "GHSA-r2r7-pvh6-mvj5"
+    }
+  }
 }

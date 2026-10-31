@@ -50,9 +50,20 @@ export async function runRollup(): Promise<void> {
     const del = await pool.query(`DELETE FROM heartbeats WHERE day < $1`, [cutoff]);
     log.info('rollup.deleted_raw', { cutoff, rows: del.rowCount });
     // Instances not seen within the retention window lose their row too, so
-    // no instance_id is kept past it.
-    const delMeta = await pool.query(`DELETE FROM instance_meta WHERE last_seen < $1`, [cutoff]);
-    log.info('rollup.deleted_instance_meta', { cutoff, rows: delMeta.rowCount });
+    // no instance_id is kept past it. The same statement adds how many went to
+    // expired_instances, so the "instances ever seen" total doesn't drop.
+    const delMeta = await pool.query<{ deleted: number }>(
+      `WITH gone AS (DELETE FROM instance_meta WHERE last_seen < $1 RETURNING 1),
+            n AS (SELECT count(*)::int AS deleted FROM gone),
+            counted AS (
+              INSERT INTO expired_instances (day, count)
+              SELECT current_date, deleted FROM n WHERE deleted > 0
+              ON CONFLICT (day) DO UPDATE SET count = expired_instances.count + EXCLUDED.count
+            )
+       SELECT deleted FROM n`,
+      [cutoff],
+    );
+    log.info('rollup.deleted_instance_meta', { cutoff, rows: delMeta.rows[0]?.deleted ?? 0 });
   } catch (e) {
     firstError = e instanceof Error ? e.message : String(e);
     log.error('rollup.aborted', { err: firstError });

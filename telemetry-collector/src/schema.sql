@@ -27,6 +27,14 @@ CREATE TABLE IF NOT EXISTS instance_meta (
   days_seen    integer NOT NULL DEFAULT 1
 );
 
+-- How many instance_meta rows the rollup deleted per day (instances not
+-- seen within the retention window). Only a count, no instance_id, so
+-- "instances ever seen" = count(instance_meta) + sum(count).
+CREATE TABLE IF NOT EXISTS expired_instances (
+  day    date PRIMARY KEY,
+  count  integer NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS daily_rollups (
   day                  date PRIMARY KEY,
   active_instances     integer NOT NULL,

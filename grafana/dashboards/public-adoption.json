@@ -7,7 +7,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 5,
+  "version": 6,
   "refresh": "1h",
   "time": {
     "from": "now-30d",
@@ -104,7 +104,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT count(*) AS value FROM instance_meta"
+          "rawSql": "SELECT (SELECT count(*) FROM instance_meta) + COALESCE((SELECT sum(count) FROM expired_instances), 0) AS value"
         }
       ]
     },

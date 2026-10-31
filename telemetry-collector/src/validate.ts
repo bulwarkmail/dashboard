@@ -66,9 +66,11 @@ export function validate(input: unknown): CleanHeartbeat | null {
   const instance_id = str(o.instance_id, UUID_RE);
   if (!instance_id) return null;
 
-  const ts = typeof o.ts === 'string' && !Number.isNaN(Date.parse(o.ts))
-    ? new Date(o.ts).toISOString()
-    : new Date().toISOString();
+  // Only the day is kept (UTC midnight); the time of day is dropped.
+  const sent = typeof o.ts === 'string' && !Number.isNaN(Date.parse(o.ts))
+    ? new Date(o.ts)
+    : new Date();
+  const ts = `${sent.toISOString().slice(0, 10)}T00:00:00.000Z`;
 
   const version = str(o.version, SEMVER_LIKE_RE);
   if (!version) return null;

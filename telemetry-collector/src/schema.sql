@@ -14,6 +14,12 @@ CREATE TABLE IF NOT EXISTS heartbeats (
 CREATE INDEX IF NOT EXISTS heartbeats_day ON heartbeats(day);
 CREATE INDEX IF NOT EXISTS heartbeats_received_at ON heartbeats(received_at);
 
+-- Heartbeats stored before the collector rounded `ts` to the day still
+-- carry the send time. Drop it so stored payloads only hold the day.
+UPDATE heartbeats
+SET payload = jsonb_set(payload, '{ts}', to_jsonb(to_char(day, 'YYYY-MM-DD') || 'T00:00:00.000Z'))
+WHERE payload->>'ts' IS DISTINCT FROM to_char(day, 'YYYY-MM-DD') || 'T00:00:00.000Z';
+
 CREATE TABLE IF NOT EXISTS instance_meta (
   instance_id  uuid PRIMARY KEY,
   first_seen   date NOT NULL,

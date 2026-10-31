@@ -6,8 +6,9 @@ import { log } from './log.js';
 // 1. Compute aggregate counts for each day in the heartbeats table that
 //    doesn't already have a row in daily_rollups.
 // 2. Update instance_meta first/last/days_seen.
-// 3. Delete heartbeats older than retentionDays. After deletion only
-//    daily_rollups + instance_meta remain (no per-instance grain).
+// 3. Delete heartbeats older than retentionDays, and instance_meta rows of
+//    instances last seen before then. Past the window only daily_rollups
+//    remain (no per-instance grain).
 
 export async function runRollup(): Promise<void> {
   const runId = (await pool.query(
@@ -48,6 +49,10 @@ export async function runRollup(): Promise<void> {
       .toISOString().slice(0, 10);
     const del = await pool.query(`DELETE FROM heartbeats WHERE day < $1`, [cutoff]);
     log.info('rollup.deleted_raw', { cutoff, rows: del.rowCount });
+    // Instances not seen within the retention window lose their row too, so
+    // no instance_id is kept past it.
+    const delMeta = await pool.query(`DELETE FROM instance_meta WHERE last_seen < $1`, [cutoff]);
+    log.info('rollup.deleted_instance_meta', { cutoff, rows: delMeta.rowCount });
   } catch (e) {
     firstError = e instanceof Error ? e.message : String(e);
     log.error('rollup.aborted', { err: firstError });

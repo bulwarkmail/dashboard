@@ -32,6 +32,18 @@ function num(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+// "repo/package,repo/package" — ghcr.io packages whose public page is scraped for pull totals.
+function ghcrPackages(raw: string): Array<{ repo: string; pkg: string }> {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => {
+      const [repo, pkg] = s.split('/');
+      return { repo, pkg: pkg ?? repo };
+    });
+}
+
 export const env = {
   githubToken: required('GITHUB_TOKEN'),
   githubOrg: process.env.GITHUB_ORG || 'bulwarkmail',
@@ -42,6 +54,15 @@ export const env = {
   pgDatabase: process.env.PG_DATABASE || 'dashboard',
   fastIntervalMs: num('COLLECTOR_INTERVAL_FAST_MS', 15 * 60 * 1000),
   slowIntervalMs: num('COLLECTOR_INTERVAL_SLOW_MS', 24 * 60 * 60 * 1000),
-  reposDir: process.env.COLLECTOR_REPOS_DIR || './data/repos',
+  reposDir: process.env.COLLECTOR_REPOS_DIR || '/opt/bulwark-dashboard/data/repos',
   runOnce: process.argv.includes('--once'),
+  ghcrPackages: ghcrPackages(
+    process.env.GHCR_PACKAGES
+      || 'webmail/webmail,webmail/webmail-lite,webmail/webmail-beta,webmail/webmail-lite-beta,legacy-proxy/legacy-proxy',
+  ),
+  // App Store Connect (TestFlight install metrics). All three must be set to enable it.
+  ascKeyFile: process.env.ASC_KEY_FILE || '',
+  ascKeyId: process.env.ASC_KEY_ID || '',
+  ascIssuerId: process.env.ASC_ISSUER_ID || '',
+  ascBundleId: process.env.ASC_BUNDLE_ID || 'org.bulwarkmail.mobile',
 };

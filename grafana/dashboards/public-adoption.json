@@ -1,29 +1,56 @@
 {
   "uid": "bulwark-public",
   "title": "Bulwark Self-hosted Adoption",
-  "tags": ["bulwark", "public"],
+  "tags": [
+    "bulwark",
+    "public"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 3,
+  "version": 5,
   "refresh": "1h",
-  "time": { "from": "now-30d", "to": "now" },
-  "templating": { "list": [] },
-  "annotations": { "list": [] },
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
   "panels": [
     {
       "id": 1,
       "type": "stat",
       "title": "Active instances (last 30 days)",
-      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
-      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 5 },
+      "datasource": {
+        "type": "postgres",
+        "uid": "telemetry_pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 5
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": { "mode": "fixed", "fixedColor": "blue" }
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
         }
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "graphMode": "area",
         "colorMode": "value",
         "textMode": "value",
@@ -38,19 +65,80 @@
       ]
     },
     {
+      "id": 5,
+      "type": "stat",
+      "title": "Total instances ever seen",
+      "datasource": {
+        "type": "postgres",
+        "uid": "telemetry_pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "area",
+        "colorMode": "value",
+        "textMode": "value",
+        "justifyMode": "center"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS value FROM instance_meta"
+        }
+      ]
+    },
+    {
       "id": 2,
       "type": "piechart",
       "title": "Platform mix (last 7 days)",
-      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
-      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 10 },
+      "datasource": {
+        "type": "postgres",
+        "uid": "telemetry_pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 10
+      },
       "options": {
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "values": ["value", "percent"]
+          "values": [
+            "value",
+            "percent"
+          ]
         },
         "pieType": "donut",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       },
       "targets": [
         {
@@ -64,10 +152,25 @@
       "id": 3,
       "type": "barchart",
       "title": "Version distribution (latest snapshot per instance, last 7 days)",
-      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
-      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 10 },
-      "fieldConfig": { "defaults": { "unit": "short" } },
-      "options": { "orientation": "horizontal", "showValue": "auto" },
+      "datasource": {
+        "type": "postgres",
+        "uid": "telemetry_pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "auto"
+      },
       "targets": [
         {
           "refId": "A",
@@ -80,12 +183,24 @@
       "id": 4,
       "type": "timeseries",
       "title": "New instances per day (last 30 days)",
-      "datasource": { "type": "postgres", "uid": "telemetry_pg" },
-      "gridPos": { "x": 0, "y": 15, "w": 24, "h": 10 },
+      "datasource": {
+        "type": "postgres",
+        "uid": "telemetry_pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 24,
+        "h": 10
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "custom": { "drawStyle": "bars", "fillOpacity": 80, "spanNulls": true }
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "spanNulls": true
+          }
         }
       },
       "targets": [

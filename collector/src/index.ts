@@ -1,6 +1,8 @@
 import { migrate, pool } from './db.js';
 import { runSnapshot } from './snapshot.js';
 import { runGitScan } from './git.js';
+import { runGhcr } from './ghcr.js';
+import { runTestflight, testflightConfigured } from './testflight.js';
 import { env } from './env.js';
 import { log } from './log.js';
 
@@ -11,7 +13,10 @@ async function safeSnapshot(): Promise<void> {
   if (snapshotRunning) { log.warn('snapshot.skipped: already running'); return; }
   snapshotRunning = true;
   try { await runSnapshot(); } catch (e) { log.error('snapshot.exn', { err: String(e) }); }
-  finally { snapshotRunning = false; }
+  // Download sources for the downloads dashboard ride along on the fast cycle.
+  try { await runGhcr(); } catch (e) { log.error('ghcr.exn', { err: String(e) }); }
+  try { await runTestflight(); } catch (e) { log.error('testflight.exn', { err: String(e) }); }
+  snapshotRunning = false;
 }
 
 async function safeGit(): Promise<void> {
@@ -35,6 +40,8 @@ async function main(): Promise<void> {
   log.info('collector: starting', {
     fastIntervalMs: env.fastIntervalMs,
     slowIntervalMs: env.slowIntervalMs,
+    ghcrPackages: env.ghcrPackages.length,
+    testflight: testflightConfigured(),
   });
 
   // Kick both immediately on boot so the first dashboard load has data.

@@ -1,0 +1,1087 @@
+{
+  "uid": "bulwark-downloads",
+  "title": "Bulwark / Downloads",
+  "tags": [
+    "bulwark",
+    "downloads"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Android APK downloads (all time)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT coalesce(sum(download_count), 0) AS value FROM release_assets WHERE kind = 'android-apk'"
+        }
+      ],
+      "description": "GitHub release asset download counts of bulwark-mobile-*.apk (bulwarkmail/native). Includes the version-server /android/latest.apk redirect."
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "iOS TestFlight installs (all time)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT coalesce(sum(install_count), 0) AS value FROM testflight_builds"
+        }
+      ],
+      "description": "Sum of App Store Connect betaBuildUsages.installCount over all TestFlight builds of org.bulwarkmail.mobile."
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Webmail downloads (all time)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT coalesce(sum(download_count), 0) AS value FROM release_assets WHERE kind IN ('standalone-amd64','standalone-arm64','lite','lite-stalwart')"
+        }
+      ],
+      "description": "GitHub release assets of bulwarkmail/webmail: standalone tarballs, Lite zip and Lite-for-Stalwart zip. Checksums excluded."
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Container pulls (all time)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT coalesce(sum(download_count), 0) AS value FROM container_packages"
+        }
+      ],
+      "description": "\"Total downloads\" from the public ghcr.io package pages (webmail, webmail-lite, webmail-beta, webmail-lite-beta, legacy-proxy). Counts every manifest pull, including automated update checks."
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Android APK downloads (time range)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH a AS (SELECT s.ts, CASE WHEN a.kind = 'android-apk' THEN 'android' WHEN a.kind IN ('standalone-amd64','standalone-arm64','lite','lite-stalwart') THEN 'webmail' ELSE 'other' END AS product, s.download_count - lag(s.download_count) OVER (PARTITION BY s.repo_id, s.asset_id ORDER BY s.ts) AS delta FROM release_asset_snapshots s JOIN release_assets a USING (repo_id, asset_id)), c AS (SELECT ts, 'container' AS product, download_count - lag(download_count) OVER (PARTITION BY package ORDER BY ts) AS delta FROM container_pull_snapshots), t AS (SELECT ts, 'ios' AS product, install_count - lag(install_count) OVER (PARTITION BY build_id ORDER BY ts) AS delta FROM testflight_build_snapshots), d AS (SELECT ts, product, greatest(delta, 0) AS delta FROM (SELECT * FROM a UNION ALL SELECT * FROM c UNION ALL SELECT * FROM t) u WHERE delta IS NOT NULL) SELECT coalesce(sum(delta), 0) AS value FROM d WHERE product = 'android' AND $__timeFilter(ts)"
+        }
+      ],
+      "description": "Increase of the counters within the dashboard time range. History starts 2026-10-19 (first collector run)."
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "iOS TestFlight installs (time range)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH a AS (SELECT s.ts, CASE WHEN a.kind = 'android-apk' THEN 'android' WHEN a.kind IN ('standalone-amd64','standalone-arm64','lite','lite-stalwart') THEN 'webmail' ELSE 'other' END AS product, s.download_count - lag(s.download_count) OVER (PARTITION BY s.repo_id, s.asset_id ORDER BY s.ts) AS delta FROM release_asset_snapshots s JOIN release_assets a USING (repo_id, asset_id)), c AS (SELECT ts, 'container' AS product, download_count - lag(download_count) OVER (PARTITION BY package ORDER BY ts) AS delta FROM container_pull_snapshots), t AS (SELECT ts, 'ios' AS product, install_count - lag(install_count) OVER (PARTITION BY build_id ORDER BY ts) AS delta FROM testflight_build_snapshots), d AS (SELECT ts, product, greatest(delta, 0) AS delta FROM (SELECT * FROM a UNION ALL SELECT * FROM c UNION ALL SELECT * FROM t) u WHERE delta IS NOT NULL) SELECT coalesce(sum(delta), 0) AS value FROM d WHERE product = 'ios' AND $__timeFilter(ts)"
+        }
+      ],
+      "description": "Increase of the counters within the dashboard time range. History starts 2026-10-19 (first collector run)."
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Webmail downloads (time range)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH a AS (SELECT s.ts, CASE WHEN a.kind = 'android-apk' THEN 'android' WHEN a.kind IN ('standalone-amd64','standalone-arm64','lite','lite-stalwart') THEN 'webmail' ELSE 'other' END AS product, s.download_count - lag(s.download_count) OVER (PARTITION BY s.repo_id, s.asset_id ORDER BY s.ts) AS delta FROM release_asset_snapshots s JOIN release_assets a USING (repo_id, asset_id)), c AS (SELECT ts, 'container' AS product, download_count - lag(download_count) OVER (PARTITION BY package ORDER BY ts) AS delta FROM container_pull_snapshots), t AS (SELECT ts, 'ios' AS product, install_count - lag(install_count) OVER (PARTITION BY build_id ORDER BY ts) AS delta FROM testflight_build_snapshots), d AS (SELECT ts, product, greatest(delta, 0) AS delta FROM (SELECT * FROM a UNION ALL SELECT * FROM c UNION ALL SELECT * FROM t) u WHERE delta IS NOT NULL) SELECT coalesce(sum(delta), 0) AS value FROM d WHERE product = 'webmail' AND $__timeFilter(ts)"
+        }
+      ],
+      "description": "Increase of the counters within the dashboard time range. History starts 2026-10-19 (first collector run)."
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Container pulls (time range)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH a AS (SELECT s.ts, CASE WHEN a.kind = 'android-apk' THEN 'android' WHEN a.kind IN ('standalone-amd64','standalone-arm64','lite','lite-stalwart') THEN 'webmail' ELSE 'other' END AS product, s.download_count - lag(s.download_count) OVER (PARTITION BY s.repo_id, s.asset_id ORDER BY s.ts) AS delta FROM release_asset_snapshots s JOIN release_assets a USING (repo_id, asset_id)), c AS (SELECT ts, 'container' AS product, download_count - lag(download_count) OVER (PARTITION BY package ORDER BY ts) AS delta FROM container_pull_snapshots), t AS (SELECT ts, 'ios' AS product, install_count - lag(install_count) OVER (PARTITION BY build_id ORDER BY ts) AS delta FROM testflight_build_snapshots), d AS (SELECT ts, product, greatest(delta, 0) AS delta FROM (SELECT * FROM a UNION ALL SELECT * FROM c UNION ALL SELECT * FROM t) u WHERE delta IS NOT NULL) SELECT coalesce(sum(delta), 0) AS value FROM d WHERE product = 'container' AND $__timeFilter(ts)"
+        }
+      ],
+      "description": "Increase of the counters within the dashboard time range. History starts 2026-10-19 (first collector run)."
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Downloads per day",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "description": "Daily increase of the download counters. Container pulls are on their own axis because they dwarf the rest.",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "stacking": {
+              "mode": "normal"
+            },
+            "axisPlacement": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Android APK"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "iOS TestFlight"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Webmail"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Container"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Container"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 10
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "WITH a AS (SELECT s.ts, CASE WHEN a.kind = 'android-apk' THEN 'android' WHEN a.kind IN ('standalone-amd64','standalone-arm64','lite','lite-stalwart') THEN 'webmail' ELSE 'other' END AS product, s.download_count - lag(s.download_count) OVER (PARTITION BY s.repo_id, s.asset_id ORDER BY s.ts) AS delta FROM release_asset_snapshots s JOIN release_assets a USING (repo_id, asset_id)), c AS (SELECT ts, 'container' AS product, download_count - lag(download_count) OVER (PARTITION BY package ORDER BY ts) AS delta FROM container_pull_snapshots), t AS (SELECT ts, 'ios' AS product, install_count - lag(install_count) OVER (PARTITION BY build_id ORDER BY ts) AS delta FROM testflight_build_snapshots), d AS (SELECT ts, product, greatest(delta, 0) AS delta FROM (SELECT * FROM a UNION ALL SELECT * FROM c UNION ALL SELECT * FROM t) u WHERE delta IS NOT NULL) SELECT $__timeGroupAlias(ts, '1d', 0), coalesce(sum(delta) FILTER (WHERE product = 'android'), 0) AS \"Android APK\", coalesce(sum(delta) FILTER (WHERE product = 'ios'), 0) AS \"iOS TestFlight\", coalesce(sum(delta) FILTER (WHERE product = 'webmail'), 0) AS \"Webmail\", coalesce(sum(delta) FILTER (WHERE product = 'container'), 0) AS \"Container\" FROM d WHERE $__timeFilter(ts) GROUP BY 1 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "barchart",
+      "title": "Mobile: APK downloads per release (all time)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "description": "Lifetime GitHub download count of each release's APK, newest release on the right.",
+      "gridPos": {
+        "x": 0,
+        "y": 17,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        }
+      },
+      "options": {
+        "orientation": "vertical",
+        "stacking": "none",
+        "showValue": "auto",
+        "xTickLabelRotation": -45,
+        "legend": {
+          "displayMode": "hidden"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT tag, downloads FROM (SELECT r.tag, r.published_at, sum(a.download_count) AS downloads FROM release_assets a JOIN releases r USING (repo_id, release_id) WHERE a.kind = 'android-apk' AND r.draft = false GROUP BY r.tag, r.published_at ORDER BY r.published_at DESC LIMIT 30) x ORDER BY published_at"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "barchart",
+      "title": "Webmail: downloads per release by variant (all time)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "description": "Lifetime GitHub download count per release, split by asset variant. Checksum files are not counted.",
+      "gridPos": {
+        "x": 12,
+        "y": 17,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Standalone amd64"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Standalone arm64"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "dark-orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Lite"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Lite (Stalwart)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "dark-yellow"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "orientation": "vertical",
+        "stacking": "normal",
+        "showValue": "never",
+        "xTickLabelRotation": -45,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT tag, \"Standalone amd64\", \"Standalone arm64\", \"Lite\", \"Lite (Stalwart)\" FROM (SELECT r.tag, r.published_at, coalesce(sum(a.download_count) FILTER (WHERE a.kind = 'standalone-amd64'), 0) AS \"Standalone amd64\", coalesce(sum(a.download_count) FILTER (WHERE a.kind = 'standalone-arm64'), 0) AS \"Standalone arm64\", coalesce(sum(a.download_count) FILTER (WHERE a.kind = 'lite'), 0) AS \"Lite\", coalesce(sum(a.download_count) FILTER (WHERE a.kind = 'lite-stalwart'), 0) AS \"Lite (Stalwart)\" FROM release_assets a JOIN releases r USING (repo_id, release_id) WHERE a.kind IN ('standalone-amd64','standalone-arm64','lite','lite-stalwart') AND r.draft = false GROUP BY r.tag, r.published_at ORDER BY r.published_at DESC LIMIT 30) x ORDER BY published_at"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Container pulls by image",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 8,
+        "h": 9
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "total_pulls",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_pulls"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pulls_in_range"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH d AS (SELECT package, ts, download_count - lag(download_count) OVER (PARTITION BY package ORDER BY ts) AS delta FROM container_pull_snapshots) SELECT replace(p.package, 'bulwarkmail/', 'ghcr.io/bulwarkmail/') AS image, p.download_count AS total_pulls, coalesce((SELECT sum(greatest(d.delta, 0)) FROM d WHERE d.package = p.package AND d.delta IS NOT NULL AND $__timeFilter(d.ts)), 0) AS pulls_in_range, p.updated_at AS last_checked FROM container_packages p ORDER BY total_pulls DESC"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "iOS TestFlight builds",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "description": "Per-build metrics from App Store Connect. Installs are lifetime per build.",
+      "gridPos": {
+        "x": 8,
+        "y": 26,
+        "w": 10,
+        "h": 9
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "installs"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT version, build_number AS build, uploaded_at AS uploaded, install_count AS installs, session_count AS sessions, crash_count AS crashes, feedback_count AS feedback, expired FROM testflight_builds ORDER BY uploaded_at DESC LIMIT 40"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "piechart",
+      "title": "Webmail variant mix (all time)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 26,
+        "w": 6,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Standalone amd64"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Standalone arm64"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "dark-orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Lite"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Lite (Stalwart)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "dark-yellow"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": {
+          "values": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "values": [
+            "percent"
+          ]
+        },
+        "displayLabels": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT CASE kind WHEN 'standalone-amd64' THEN 'Standalone amd64' WHEN 'standalone-arm64' THEN 'Standalone arm64' WHEN 'lite' THEN 'Lite' WHEN 'lite-stalwart' THEN 'Lite (Stalwart)' END AS variant, sum(download_count) AS downloads FROM release_assets WHERE kind IN ('standalone-amd64','standalone-arm64','lite','lite-stalwart') GROUP BY 1 ORDER BY 2 DESC"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Container pulls per day by image",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 35,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "WITH d AS (SELECT package, ts, download_count - lag(download_count) OVER (PARTITION BY package ORDER BY ts) AS delta FROM container_pull_snapshots) SELECT $__timeGroupAlias(ts, '1d', 0), replace(package, 'bulwarkmail/', '') AS metric, sum(greatest(delta, 0)) AS pulls FROM d WHERE delta IS NOT NULL AND $__timeFilter(ts) GROUP BY 1, 2 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Mobile downloads per day (Android APK vs. iOS TestFlight)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 35,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Android APK"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "iOS TestFlight"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Webmail"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Container"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "WITH a AS (SELECT s.ts, CASE WHEN a.kind = 'android-apk' THEN 'android' WHEN a.kind IN ('standalone-amd64','standalone-arm64','lite','lite-stalwart') THEN 'webmail' ELSE 'other' END AS product, s.download_count - lag(s.download_count) OVER (PARTITION BY s.repo_id, s.asset_id ORDER BY s.ts) AS delta FROM release_asset_snapshots s JOIN release_assets a USING (repo_id, asset_id)), c AS (SELECT ts, 'container' AS product, download_count - lag(download_count) OVER (PARTITION BY package ORDER BY ts) AS delta FROM container_pull_snapshots), t AS (SELECT ts, 'ios' AS product, install_count - lag(install_count) OVER (PARTITION BY build_id ORDER BY ts) AS delta FROM testflight_build_snapshots), d AS (SELECT ts, product, greatest(delta, 0) AS delta FROM (SELECT * FROM a UNION ALL SELECT * FROM c UNION ALL SELECT * FROM t) u WHERE delta IS NOT NULL) SELECT $__timeGroupAlias(ts, '1d', 0), coalesce(sum(delta) FILTER (WHERE product = 'android'), 0) AS \"Android APK\", coalesce(sum(delta) FILTER (WHERE product = 'ios'), 0) AS \"iOS TestFlight\" FROM d WHERE product IN ('android', 'ios') AND $__timeFilter(ts) GROUP BY 1 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "table",
+      "title": "Recent releases: downloads by asset",
+      "datasource": {
+        "type": "postgres",
+        "uid": "dashboard_pg"
+      },
+      "description": "Every non-checksum asset of the last 15 releases per repo with its lifetime download count.",
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 24,
+        "h": 10
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "downloads"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "size"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH recent AS (SELECT repo_id, release_id, tag, published_at, row_number() OVER (PARTITION BY repo_id ORDER BY published_at DESC) AS rn FROM releases WHERE draft = false AND published_at IS NOT NULL) SELECT r.repo_id AS repo, r.tag, r.published_at AS published, a.name AS asset, a.kind, a.download_count AS downloads, a.size_bytes AS size FROM release_assets a JOIN recent r USING (repo_id, release_id) WHERE r.rn <= 15 AND a.kind NOT IN ('checksum', 'mapping') ORDER BY r.published_at DESC, a.name"
+        }
+      ]
+    }
+  ]
+}

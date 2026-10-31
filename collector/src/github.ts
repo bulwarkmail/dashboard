@@ -138,6 +138,14 @@ export async function fetchTopReferrers(owner: string, repo: string): Promise<Re
   }
 }
 
+export interface AssetRow {
+  assetId: number;
+  name: string;
+  sizeBytes: number;
+  createdAt: string | null;
+  downloads: number;
+}
+
 export interface ReleaseRow {
   releaseId: number;
   tag: string;
@@ -146,6 +154,7 @@ export interface ReleaseRow {
   prerelease: boolean;
   publishedAt: string | null;
   downloads: number;
+  assets: AssetRow[];
 }
 
 export async function fetchReleases(owner: string, repo: string): Promise<ReleaseRow[]> {
@@ -157,7 +166,14 @@ export async function fetchReleases(owner: string, repo: string): Promise<Releas
       per_page: 100,
     })) {
       for (const r of page.data) {
-        const downloads = (r.assets ?? []).reduce((sum, a) => sum + (a.download_count ?? 0), 0);
+        const assets: AssetRow[] = (r.assets ?? []).map((a) => ({
+          assetId: a.id,
+          name: a.name,
+          sizeBytes: a.size ?? 0,
+          createdAt: a.created_at ?? null,
+          downloads: a.download_count ?? 0,
+        }));
+        const downloads = assets.reduce((sum, a) => sum + a.downloads, 0);
         out.push({
           releaseId: r.id,
           tag: r.tag_name,
@@ -166,6 +182,7 @@ export async function fetchReleases(owner: string, repo: string): Promise<Releas
           prerelease: r.prerelease,
           publishedAt: r.published_at ?? null,
           downloads,
+          assets,
         });
       }
     }
@@ -173,4 +190,16 @@ export async function fetchReleases(owner: string, repo: string): Promise<Releas
     log.warn('github.fetchReleases failed', { repo: `${owner}/${repo}`, err: String(err) });
   }
   return out;
+}
+
+// Release asset classification used by the downloads dashboard.
+export function classifyAsset(name: string): string {
+  if (name.endsWith('.sha256')) return 'checksum';
+  if (name.endsWith('-mapping.txt')) return 'mapping';
+  if (name.endsWith('.apk')) return 'android-apk';
+  if (/^bulwark-standalone-.*amd64\.tar\.gz$/.test(name)) return 'standalone-amd64';
+  if (/^bulwark-standalone-.*arm64\.tar\.gz$/.test(name)) return 'standalone-arm64';
+  if (name === 'bulwark-lite-stalwart.zip') return 'lite-stalwart';
+  if (name.startsWith('bulwark-lite-')) return 'lite';
+  return 'other';
 }

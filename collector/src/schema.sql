@@ -108,3 +108,68 @@ CREATE TABLE IF NOT EXISTS collector_runs (
   repos_err    integer,
   error        text
 );
+
+-- Downloads dashboard (added 2026-10-19) -------------------------------------
+
+-- Current state of every GitHub release asset, classified by `kind`.
+CREATE TABLE IF NOT EXISTS release_assets (
+  repo_id        text NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  asset_id       bigint NOT NULL,
+  release_id     bigint NOT NULL,
+  name           text NOT NULL,
+  kind           text NOT NULL,          -- android-apk | standalone-amd64 | standalone-arm64 | lite | lite-stalwart | checksum | mapping | other
+  size_bytes     bigint,
+  created_at     timestamptz,
+  download_count integer NOT NULL DEFAULT 0,
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (repo_id, asset_id)
+);
+CREATE INDEX IF NOT EXISTS release_assets_release ON release_assets (repo_id, release_id);
+
+-- One row per asset whenever its download_count changes (first run = baseline).
+CREATE TABLE IF NOT EXISTS release_asset_snapshots (
+  repo_id        text NOT NULL,
+  asset_id       bigint NOT NULL,
+  ts             timestamptz NOT NULL DEFAULT now(),
+  download_count integer NOT NULL,
+  PRIMARY KEY (repo_id, asset_id, ts)
+);
+CREATE INDEX IF NOT EXISTS release_asset_snapshots_ts ON release_asset_snapshots (ts DESC);
+
+-- ghcr.io package totals, scraped from the public package page.
+CREATE TABLE IF NOT EXISTS container_packages (
+  package        text PRIMARY KEY,       -- "bulwarkmail/webmail"
+  repo_id        text,
+  download_count bigint NOT NULL DEFAULT 0,
+  updated_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS container_pull_snapshots (
+  package        text NOT NULL,
+  ts             timestamptz NOT NULL DEFAULT now(),
+  download_count bigint NOT NULL,
+  PRIMARY KEY (package, ts)
+);
+CREATE INDEX IF NOT EXISTS container_pull_snapshots_ts ON container_pull_snapshots (ts DESC);
+
+-- TestFlight builds (App Store Connect betaBuildUsages metrics).
+CREATE TABLE IF NOT EXISTS testflight_builds (
+  build_id       text PRIMARY KEY,
+  bundle_id      text NOT NULL,
+  build_number   text NOT NULL,
+  version        text,
+  uploaded_at    timestamptz,
+  expired        boolean NOT NULL DEFAULT false,
+  install_count  integer NOT NULL DEFAULT 0,
+  session_count  integer NOT NULL DEFAULT 0,
+  crash_count    integer NOT NULL DEFAULT 0,
+  feedback_count integer NOT NULL DEFAULT 0,
+  updated_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS testflight_build_snapshots (
+  build_id       text NOT NULL,
+  ts             timestamptz NOT NULL DEFAULT now(),
+  install_count  integer NOT NULL,
+  session_count  integer NOT NULL,
+  PRIMARY KEY (build_id, ts)
+);
+CREATE INDEX IF NOT EXISTS testflight_build_snapshots_ts ON testflight_build_snapshots (ts DESC);

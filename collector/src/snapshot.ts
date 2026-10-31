@@ -8,6 +8,7 @@ import {
   fetchTopPaths,
   fetchTopReferrers,
   fetchReleases,
+  classifyAsset,
   type RepoLite,
 } from './github.js';
 import { env } from './env.js';
@@ -88,7 +89,7 @@ async function snapshotOne(r: RepoLite): Promise<void> {
     );
   }
 
-  // Releases.
+  // Releases + per-asset download counts (with a change-only history for the downloads dashboard).
   const releases = await fetchReleases(r.owner, r.name);
   for (const rel of releases) {
     await pool.query(
@@ -103,6 +104,28 @@ async function snapshotOne(r: RepoLite): Promise<void> {
          download_count = EXCLUDED.download_count`,
       [r.id, rel.releaseId, rel.tag, rel.name, rel.draft, rel.prerelease, rel.publishedAt, rel.downloads],
     );
+    for (const a of rel.assets) {
+      await pool.query(
+        `INSERT INTO release_assets (repo_id, asset_id, release_id, name, kind, size_bytes, created_at, download_count, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+         ON CONFLICT (repo_id, asset_id) DO UPDATE SET
+           release_id = EXCLUDED.release_id,
+           name = EXCLUDED.name,
+           kind = EXCLUDED.kind,
+           size_bytes = EXCLUDED.size_bytes,
+           created_at = EXCLUDED.created_at,
+           download_count = EXCLUDED.download_count,
+           updated_at = now()`,
+        [r.id, a.assetId, rel.releaseId, a.name, classifyAsset(a.name), a.sizeBytes, a.createdAt, a.downloads],
+      );
+      await pool.query(
+        `INSERT INTO release_asset_snapshots (repo_id, asset_id, ts, download_count)
+         SELECT $1, $2, now(), $3
+         WHERE COALESCE((SELECT download_count FROM release_asset_snapshots
+                         WHERE repo_id = $1 AND asset_id = $2 ORDER BY ts DESC LIMIT 1), -1) <> $3`,
+        [r.id, a.assetId, a.downloads],
+      );
+    }
   }
 }
 

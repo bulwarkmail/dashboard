@@ -37,4 +37,9 @@ export const env = {
   // Optional GitHub token to lift the unauthenticated rate limit (60 req/h/IP).
   // Public-repo reads work fine without one.
   githubToken: process.env.VERSION_SERVER_GITHUB_TOKEN || '',
+  // Native app repo whose newest APK /android/latest.apk redirects to.
+  androidRepo: process.env.VERSION_SERVER_ANDROID_REPO || 'bulwarkmail/native',
+  // Polled more often than the webmail releases so a new APK is served soon
+  // after it is attached. 10 minutes = 6 req/h, well inside the anonymous limit.
+  androidRefreshIntervalMs: num('VERSION_SERVER_ANDROID_REFRESH_MS', 10 * 60 * 1000),
 };

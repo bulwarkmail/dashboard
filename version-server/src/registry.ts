@@ -13,6 +13,7 @@ export interface VersionEntry {
   title: string | null;     // GitHub release name
   severity: Severity;
   advisory: string | null;  // GHSA identifier when severity = security
+  prerelease: boolean;      // GitHub prerelease flag or a "-beta.N"-style tag
 }
 
 interface OverridesFile {
@@ -101,7 +102,8 @@ export async function refresh(): Promise<void> {
   for (const r of releases) {
     if (r.draft) continue;
     const version = normalize(r.tag_name);
-    if (!parse(version)) continue;
+    const parsed = parse(version);
+    if (!parsed) continue;
     const override = sevMap[version];
     entries.set(version, {
       version,
@@ -110,6 +112,7 @@ export async function refresh(): Promise<void> {
       title: r.name,
       severity: override?.severity ?? 'normal',
       advisory: override?.advisory ?? null,
+      prerelease: r.prerelease || parsed.pre !== null,
     });
   }
 
@@ -117,7 +120,8 @@ export async function refresh(): Promise<void> {
   // even if its GitHub release was deleted).
   for (const [version, override] of Object.entries(sevMap)) {
     if (entries.has(version)) continue;
-    if (!parse(version)) continue;
+    const parsed = parse(version);
+    if (!parsed) continue;
     entries.set(version, {
       version,
       released: null,
@@ -125,15 +129,16 @@ export async function refresh(): Promise<void> {
       title: null,
       severity: override.severity,
       advisory: override.advisory ?? null,
+      prerelease: parsed.pre !== null,
     });
   }
 
   // Latest = highest non-prerelease version that isn't flagged deprecated.
   let latest: string | null = null;
   for (const e of entries.values()) {
-    if (e.severity === 'deprecated') continue;
+    if (e.severity === 'deprecated' || e.prerelease) continue;
     const p = parse(e.version);
-    if (!p || p.pre !== null) continue;
+    if (!p) continue;
     if (!latest || compare(p, parse(latest)!) > 0) latest = e.version;
   }
 
@@ -172,6 +177,10 @@ export interface LookupResult {
 //   - any newer version with severity=security  → "security" (point url at it)
 //   - any newer version (normal)         → "normal" (point url at latest)
 //   - else                               → "none"
+//
+// Pre-releases (betas) are never offered as updates, not even to someone
+// already running a beta: the beta channel updates itself. A beta install is
+// told to update once a stable release above it ships (1.11.0 > 1.11.0-beta.2).
 //
 // Unknown current version returns severity="unknown" and updateAvailable=false
 // so dev/fork builds don't get a scary banner.
@@ -235,7 +244,7 @@ export function lookup(currentRaw: string): LookupResult {
     const p = parse(e.version);
     if (!p) continue;
     if (compare(p, currentParsed) <= 0) continue;
-    if (e.severity === 'deprecated') continue;
+    if (e.severity === 'deprecated' || e.prerelease) continue;
     if (e.severity === 'security') {
       if (!newestSecurity || compare(p, parse(newestSecurity.version)!) > 0) {
         newestSecurity = e;

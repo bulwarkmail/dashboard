@@ -49,6 +49,10 @@ export async function runRollup(): Promise<void> {
       .toISOString().slice(0, 10);
     const del = await pool.query(`DELETE FROM heartbeats WHERE day < $1`, [cutoff]);
     log.info('rollup.deleted_raw', { cutoff, rows: del.rowCount });
+    // Error counts (schema 2) keep the same window.
+    const delErrors = await pool.query(`DELETE FROM error_counts WHERE day < $1`, [cutoff]);
+    await pool.query(`DELETE FROM error_forwards WHERE day < $1`, [cutoff]);
+    log.info('rollup.deleted_error_counts', { cutoff, rows: delErrors.rowCount });
     // Instances not seen within the retention window lose their row too, so
     // no instance_id is kept past it. The same statement adds how many went to
     // expired_instances, so the "instances ever seen" total doesn't drop.

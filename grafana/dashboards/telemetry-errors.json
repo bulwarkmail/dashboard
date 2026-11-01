@@ -1,0 +1,185 @@
+{
+  "uid": "bulwark-telemetry-errors",
+  "title": "Bulwark / Telemetry error counts",
+  "tags": [
+    "bulwark",
+    "telemetry",
+    "private"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1h",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Instances sending error counts (last 7d)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "telemetry_pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(DISTINCT instance_id) AS value FROM error_counts WHERE day >= current_date - interval '7 days'"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Latest version with error counts",
+      "datasource": {
+        "type": "postgres",
+        "uid": "telemetry_pg"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/.*/"
+        },
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT (SELECT version FROM error_counts GROUP BY version ORDER BY string_to_array(split_part(split_part(version, '-', 1), '+', 1), '.')::int[] DESC LIMIT 1) AS version"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Instances reporting errors per day",
+      "datasource": {
+        "type": "postgres",
+        "uid": "telemetry_pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT day::timestamp AS time, count(DISTINCT instance_id) AS instances FROM error_counts WHERE $__timeFilter(day::timestamp) GROUP BY day ORDER BY day"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Top errors in the latest version (last 7 days)",
+      "description": "Fingerprints change with every release, so this is per version. Open the fingerprint in Bugsink (project bulwark-telemetry) for the resolved stack.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "telemetry_pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 10
+      },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT name, coalesce(message, '') AS code, fingerprint,\n       count(DISTINCT instance_id) AS instances,\n       count(*) AS instance_days,\n       max(days) AS most_days_in_a_week,\n       (array_agg(frames->0->>'path'))[1] AS top_frame\n     FROM error_counts\n     WHERE version = (SELECT version FROM error_counts GROUP BY version ORDER BY string_to_array(split_part(split_part(version, '-', 1), '+', 1), '.')::int[] DESC LIMIT 1) AND day >= current_date - interval '7 days'\n     GROUP BY name, code, fingerprint\n     ORDER BY instances DESC, instance_days DESC\n     LIMIT 50"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "New errors per version",
+      "description": "An error counts as new in the first version it was reported for, by name and fixed code (fingerprints change with every build).",
+      "datasource": {
+        "type": "postgres",
+        "uid": "telemetry_pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 12,
+        "h": 10
+      },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH firsts AS (\n       SELECT name, coalesce(message, '') AS code, min(string_to_array(split_part(split_part(version, '-', 1), '+', 1), '.')::int[]) AS first_key\n       FROM error_counts GROUP BY name, code\n     )\n     SELECT ec.version,\n       count(DISTINCT (ec.name, coalesce(ec.message, ''))) FILTER (WHERE string_to_array(split_part(split_part(ec.version, '-', 1), '+', 1), '.')::int[] = f.first_key) AS new_errors,\n       count(DISTINCT ec.fingerprint) AS fingerprints,\n       count(DISTINCT ec.instance_id) AS instances\n     FROM error_counts ec JOIN firsts f ON f.name = ec.name AND f.code = coalesce(ec.message, '')\n     GROUP BY ec.version\n     ORDER BY string_to_array(split_part(split_part(ec.version, '-', 1), '+', 1), '.')::int[] DESC\n     LIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Instances per error (last 30 days)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "telemetry_pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 18,
+        "w": 12,
+        "h": 10
+      },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT fingerprint, version, name, coalesce(message, '') AS code,\n       count(DISTINCT instance_id) AS instances,\n       count(DISTINCT day) AS days\n     FROM error_counts\n     WHERE day >= current_date - interval '30 days'\n     GROUP BY fingerprint, version, name, code\n     ORDER BY instances DESC, days DESC\n     LIMIT 100"
+        }
+      ]
+    }
+  ]
+}

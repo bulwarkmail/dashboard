@@ -46,3 +46,20 @@ test('the rollup counts the instance_meta rows it deletes', async (t) => {
   assert.match(stmt, /INSERT INTO expired_instances \(day, count\)/);
   assert.match(stmt, /count = expired_instances\.count \+ EXCLUDED\.count/);
 });
+
+test('the rollup deletes error counts and forward marks past the retention window', async (t) => {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+    return { rows: [{ id: 1 }], rowCount: 0 };
+  });
+
+  await runRollup();
+
+  const cutoff = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+  for (const table of ['error_counts', 'error_forwards']) {
+    const del = calls.find((c) => c.sql === `DELETE FROM ${table} WHERE day < $1`);
+    assert.ok(del, `no delete from ${table}`);
+    assert.deepEqual(del.params, [cutoff]);
+  }
+});

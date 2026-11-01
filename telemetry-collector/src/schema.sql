@@ -46,6 +46,35 @@ CREATE TABLE IF NOT EXISTS daily_rollups (
   computed_at          timestamptz NOT NULL DEFAULT now()
 );
 
+-- Error counts of schema 2 heartbeats (sent only with the instance's
+-- separate error-count consent). One row per instance, day the errors
+-- happened on (the day before the heartbeat), fingerprint and version.
+-- Deleted after the retention window like heartbeats. instance_id never
+-- leaves this table: the forwarder groups it away.
+CREATE TABLE IF NOT EXISTS error_counts (
+  instance_id   uuid    NOT NULL,
+  day           date    NOT NULL,
+  fingerprint   text    NOT NULL,
+  version       text    NOT NULL,
+  name          text    NOT NULL,
+  frames        jsonb   NOT NULL,
+  count_bucket  text    NOT NULL,
+  days          integer NOT NULL,
+  message       text,
+  PRIMARY KEY (instance_id, day, fingerprint, version)
+);
+CREATE INDEX IF NOT EXISTS error_counts_day ON error_counts(day);
+CREATE INDEX IF NOT EXISTS error_counts_group ON error_counts(day, fingerprint, version);
+
+-- Which (day, fingerprint, version) groups went to Bugsink, so each goes once.
+CREATE TABLE IF NOT EXISTS error_forwards (
+  day           date        NOT NULL,
+  fingerprint   text        NOT NULL,
+  version       text        NOT NULL,
+  forwarded_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (day, fingerprint, version)
+);
+
 CREATE TABLE IF NOT EXISTS collector_runs (
   id           bigserial PRIMARY KEY,
   job          text        NOT NULL,

@@ -9,7 +9,7 @@ Internal observability stack for the Bulwark org: Grafana + Prometheus + Postgre
 - **Postgres 16** - backing store for Grafana, Umami, and the GitHub collector. Bound to `127.0.0.1:5432`.
 - **Umami** - privacy-friendly web analytics. Public vhost; tracking script reachable from end-user browsers.
 - **collector** (pm2) - periodically pulls per-repo GitHub stats (stars, issues, traffic, releases) and computes commits + LOC by cloning into `data/repos/`. Writes to the `dashboard` Postgres DB.
-- **telemetry-collector** (pm2) - receives anonymous heartbeats from self-hosted instances, rolls them up, writes to the `telemetry` Postgres DB.
+- **telemetry-collector** (pm2) - receives anonymous heartbeats from self-hosted instances, rolls them up, writes to the `telemetry` Postgres DB. Schema 2 heartbeats add error counts (`error_counts`, 90 days); with `BUGSINK_TELEMETRY_DSN` set, complete days are forwarded to Bugsink, one event per fingerprint, version and day, without instance ids.
 
 ## Layout on the server
 

@@ -4,10 +4,14 @@ import { log } from './log.js';
 import { migrate, pool } from './db.js';
 import { validate } from './validate.js';
 import { runRollup } from './rollup.js';
+import { storeHeartbeat } from './heartbeat.js';
+import { runForward } from './forward.js';
 
-const MAX_BODY_BYTES = 4 * 1024;
+// Schema 2 carries up to 50 error counts; schema 1 stays capped at 4 KB.
+const MAX_BODY_BYTES = 64 * 1024;
+const MAX_V1_BODY_BYTES = 4 * 1024;
 
-async function readJson(req: http.IncomingMessage): Promise<unknown> {
+async function readJson(req: http.IncomingMessage): Promise<{ body: unknown; bytes: number }> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
@@ -21,11 +25,11 @@ async function readJson(req: http.IncomingMessage): Promise<unknown> {
       chunks.push(chunk);
     });
     req.on('end', () => {
-      if (chunks.length === 0) return resolve(null);
+      if (chunks.length === 0) return resolve({ body: null, bytes: 0 });
       try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        resolve({ body: JSON.parse(Buffer.concat(chunks).toString('utf8')), bytes: total });
       } catch {
-        resolve(undefined);
+        resolve({ body: undefined, bytes: total });
       }
     });
     req.on('error', reject);
@@ -53,35 +57,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === 'POST' && path === '/v1/heartbeat') {
-      const body = await readJson(req);
+      const { body, bytes } = await readJson(req);
       const clean = validate(body);
       if (!clean) {
         return send(res, 400, { ok: false });
       }
-      const day = clean.ts.slice(0, 10);
-      await pool.query(
-        `INSERT INTO heartbeats (instance_id, day, payload, received_at)
-         VALUES ($1, $2, $3::jsonb, now())
-         ON CONFLICT (instance_id, day) DO UPDATE SET
-           payload = EXCLUDED.payload,
-           received_at = now()`,
-        [clean.instance_id, day, JSON.stringify(clean)],
-      );
-      // Maintain instance_meta inline so panels keyed off first/last/days_seen
-      // are correct in real time without waiting for the daily rollup.
-      await pool.query(
-        `INSERT INTO instance_meta (instance_id, first_seen, last_seen, days_seen)
-         VALUES ($1, $2, $2, 1)
-         ON CONFLICT (instance_id) DO UPDATE SET
-           last_seen = GREATEST(instance_meta.last_seen, EXCLUDED.last_seen),
-           first_seen = LEAST(instance_meta.first_seen, EXCLUDED.first_seen),
-           days_seen = (
-             SELECT count(DISTINCT day)::int
-             FROM heartbeats
-             WHERE heartbeats.instance_id = EXCLUDED.instance_id
-           )`,
-        [clean.instance_id, day],
-      );
+      if (clean.schema === '1' && bytes > MAX_V1_BODY_BYTES) return send(res, 413, { ok: false });
+      await storeHeartbeat(clean);
       return send(res, 200, { ok: true });
     }
 
@@ -104,6 +86,11 @@ async function main(): Promise<void> {
   // Run rollup once at boot, then daily.
   void runRollup();
   setInterval(() => { void runRollup(); }, 24 * 60 * 60 * 1000);
+
+  // Forward complete days of error counts to Bugsink (BUGSINK_TELEMETRY_DSN),
+  // apart from the heartbeat path: a failure there never fails a heartbeat.
+  void runForward();
+  setInterval(() => { void runForward(); }, 60 * 60 * 1000);
 
   const shutdown = async (sig: string): Promise<void> => {
     log.info('shutting down', { sig });

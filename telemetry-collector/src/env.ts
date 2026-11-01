@@ -41,4 +41,7 @@ export const env = {
   pgPassword: required('POSTGRES_TELEMETRY_PASSWORD'),
   pgDatabase: process.env.TELEMETRY_PG_DB || 'telemetry',
   retentionDays: num('TELEMETRY_RETENTION_DAYS', 90),
+  // Where complete days of error counts are forwarded (a Sentry-protocol
+  // DSN). Empty: nothing is forwarded.
+  bugsinkTelemetryDsn: (process.env.BUGSINK_TELEMETRY_DSN ?? '').trim(),
 };

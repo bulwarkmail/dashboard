@@ -226,6 +226,45 @@ function validateV2(o: Record<string, unknown>): CleanHeartbeatV2 | null {
   return { schema: '2', ...base, errors };
 }
 
+export interface CleanErrorBatch {
+  instance_id: string;
+  /** The UTC day the counts are for. */
+  day: string;
+  errors: CleanError[];
+}
+
+const BATCH_KEYS = new Set(['schema', 'instance_id', 'day', 'errors']);
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * An instant error-count batch (POST /v1/errors): the current UTC day's
+ * errors of one instance, the ones new or in a higher count bucket since
+ * its last batch. As strict as schema 2: an unknown field, a bad value or a
+ * day other than today or yesterday (a batch sent just after midnight)
+ * rejects it.
+ */
+export function validateErrorBatch(input: unknown, now = Date.now()): CleanErrorBatch | null {
+  if (!isObject(input) || !onlyKeys(input, BATCH_KEYS) || input.schema !== '1') return null;
+  const instance_id = str(input.instance_id, UUID_RE);
+  const day = str(input.day, DAY_RE);
+  if (!instance_id || !day) return null;
+  const today = new Date(now).toISOString().slice(0, 10);
+  const yesterday = new Date(now - 86_400_000).toISOString().slice(0, 10);
+  if (day !== today && day !== yesterday) return null;
+  if (!Array.isArray(input.errors) || input.errors.length === 0 || input.errors.length > MAX_ERRORS) return null;
+  const errors: CleanError[] = [];
+  const seen = new Set<string>();
+  for (const raw of input.errors) {
+    const error = validError(raw);
+    if (!error) return null;
+    const key = `${error.fingerprint}|${error.version}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    errors.push(error);
+  }
+  return { instance_id: instance_id.toLowerCase(), day, errors };
+}
+
 export function validate(input: unknown): CleanHeartbeat | CleanHeartbeatV2 | null {
   if (!isObject(input)) return null;
   const schema = str(input.schema);

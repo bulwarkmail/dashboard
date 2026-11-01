@@ -2,10 +2,13 @@ import http from 'node:http';
 import { env } from './env.js';
 import { log } from './log.js';
 import { migrate, pool } from './db.js';
-import { validate } from './validate.js';
+import { validate, validateErrorBatch } from './validate.js';
 import { runRollup } from './rollup.js';
 import { storeHeartbeat } from './heartbeat.js';
 import { runForward } from './forward.js';
+import { INSTANCE_INTERVAL_MS, InstanceLimiter, forwardInstant, storeInstantErrors } from './instant.js';
+
+const instanceLimiter = new InstanceLimiter(INSTANCE_INTERVAL_MS);
 
 // Schema 2 carries up to 50 error counts; schema 1 stays capped at 4 KB.
 const MAX_BODY_BYTES = 64 * 1024;
@@ -65,6 +68,18 @@ const server = http.createServer(async (req, res) => {
       if (clean.schema === '1' && bytes > MAX_V1_BODY_BYTES) return send(res, 413, { ok: false });
       await storeHeartbeat(clean);
       return send(res, 200, { ok: true });
+    }
+
+    if (method === 'POST' && path === '/v1/errors') {
+      const { body } = await readJson(req);
+      const clean = validateErrorBatch(body);
+      if (!clean) return send(res, 400, { ok: false });
+      if (!instanceLimiter.allow(clean.instance_id)) return send(res, 429, { ok: false });
+      await storeInstantErrors(clean);
+      send(res, 200, { ok: true });
+      // After the answer: Bugsink being slow or down never holds up an instance.
+      void forwardInstant(clean);
+      return;
     }
 
     return send(res, 404, { ok: false });

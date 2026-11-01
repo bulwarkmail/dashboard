@@ -18,7 +18,7 @@ import type { CleanErrorFrame } from './validate.js';
 // never touches the heartbeat path.
 
 const BUCKET_FLOOR: Record<string, number> = { '1': 1, '2-5': 2, '6-10': 6, '11-50': 11, '51-200': 51, '201+': 201 };
-const SEND_TIMEOUT_MS = 10_000;
+export const SEND_TIMEOUT_MS = 10_000;
 const BATCH = 500;
 
 export interface ErrorGroup {
@@ -50,8 +50,12 @@ export function envelopeUrlFor(dsn: string): Dsn | null {
   return { url: `${url.protocol}//${url.host}${prefix}/api/${project}/envelope/?sentry_key=${url.username}&sentry_version=7` };
 }
 
-/** The event for one group. Pure, for tests. */
-export function buildForwardEvent(group: ErrorGroup): Record<string, unknown> {
+/**
+ * The event for one group. Pure, for tests. `instantAt`: an instant
+ * forward (the first report of the day), stamped with when it came in
+ * instead of the start of the day.
+ */
+export function buildForwardEvent(group: ErrorGroup, opts: { instantAt?: number } = {}): Record<string, unknown> {
   const day = typeof group.day === 'string' ? group.day.slice(0, 10) : new Date(group.day).toISOString().slice(0, 10);
   const browser = group.frames.some((frame) => frame.path.startsWith('/_next/static/'));
   const histogram: Record<string, number> = {};
@@ -68,7 +72,7 @@ export function buildForwardEvent(group: ErrorGroup): Record<string, unknown> {
     .map(([path, id]) => ({ type: 'sourcemap', code_file: path, debug_id: id }));
   return {
     event_id: randomUUID().replace(/-/g, ''),
-    timestamp: Date.parse(`${day}T00:00:00Z`) / 1000,
+    timestamp: (opts.instantAt ?? Date.parse(`${day}T00:00:00Z`)) / 1000,
     platform: browser ? 'javascript' : 'node',
     level: 'error',
     release: group.version,
@@ -83,13 +87,19 @@ export function buildForwardEvent(group: ErrorGroup): Record<string, unknown> {
       }],
     },
     ...(images.length ? { debug_meta: { images } } : {}),
-    tags: { source: 'telemetry', runtime: browser ? 'browser' : 'server', instances: String(group.instances), day },
+    tags: {
+      source: 'telemetry',
+      mode: opts.instantAt === undefined ? 'daily' : 'instant',
+      runtime: browser ? 'browser' : 'server',
+      instances: String(group.instances),
+      day,
+    },
     extra: { instances: group.instances, count_buckets: histogram, count_at_least: atLeast, most_days_in_a_week: group.max_days },
     sdk: { name: 'bulwark.telemetry-collector', version: '1' },
   };
 }
 
-function envelope(event: Record<string, unknown>): string {
+export function envelope(event: Record<string, unknown>): string {
   return `${JSON.stringify({ event_id: event.event_id, sent_at: new Date().toISOString() })}\n`
     + `${JSON.stringify({ type: 'event', content_type: 'application/json' })}\n${JSON.stringify(event)}\n`;
 }

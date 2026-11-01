@@ -75,6 +75,17 @@ CREATE TABLE IF NOT EXISTS error_forwards (
   PRIMARY KEY (day, fingerprint, version)
 );
 
+-- Which (day, fingerprint, version) groups went to Bugsink at once, from an
+-- instant error-count batch (POST /v1/errors), so the first report of the
+-- day goes once across instances. The daily forward above is separate.
+CREATE TABLE IF NOT EXISTS error_instant_forwards (
+  day           date        NOT NULL,
+  fingerprint   text        NOT NULL,
+  version       text        NOT NULL,
+  forwarded_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (day, fingerprint, version)
+);
+
 CREATE TABLE IF NOT EXISTS collector_runs (
   id           bigserial PRIMARY KEY,
   job          text        NOT NULL,

@@ -144,7 +144,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH win AS (SELECT (now() - interval '1 hour')::date AS to_d, ((now() - interval '1 hour')::date - interval '7 days')::date AS from_d), latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats, win WHERE day BETWEEN win.from_d AND win.to_d ORDER BY instance_id, day DESC) SELECT count(*) FILTER (WHERE (payload->>'platform') = 'docker')  AS docker, count(*) FILTER (WHERE (payload->>'platform') = 'bare')    AS bare, count(*) FILTER (WHERE (payload->>'platform') = 'k8s')     AS k8s, count(*) FILTER (WHERE (payload->>'platform') = 'unknown') AS unknown FROM latest"
+          "rawSql": "WITH win AS (SELECT (now() - interval '1 hour')::date AS to_d, ((now() - interval '1 hour')::date - interval '7 days')::date AS from_d), latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats, win WHERE day BETWEEN win.from_d AND win.to_d ORDER BY instance_id, day DESC) SELECT count(*) FILTER (WHERE (payload->>'platform') = 'docker')  AS docker, count(*) FILTER (WHERE (payload->>'platform') = 'bare')    AS bare, count(*) FILTER (WHERE (payload->>'platform') = 'k8s')     AS k8s, count(*) FILTER (WHERE (payload->>'platform') = 'desktop') AS desktop, count(*) FILTER (WHERE (payload->>'platform') = 'unknown') AS unknown FROM latest"
         }
       ]
     },

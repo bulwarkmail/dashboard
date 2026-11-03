@@ -13,7 +13,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SEMVER_LIKE_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[+-][\w.-]+)?$/;
 const SHORT_TEXT_RE = /^[\w.+-]{1,64}$/;
 
-const PLATFORMS = new Set(['docker', 'bare', 'k8s', 'unknown']);
+const PLATFORMS = new Set(['docker', 'bare', 'k8s', 'desktop', 'unknown']);
 const OS_FAMILIES = new Set(['linux', 'darwin', 'windows', 'unknown']);
 const COUNT_BUCKETS = new Set(['0', '1', '2-5', '6-10', '11-50', '51-200', '201+']);
 
@@ -40,8 +40,9 @@ export const MAX_FRAMES = 5;
 
 const ERROR_NAME_RE = /^[A-Za-z_$][\w$]{0,63}$/;
 const FINGERPRINT_RE = /^[0-9a-f]{16}$/;
-// A bundle file of Bulwark without origin: /_next/static/... or /.next/server/...
-const FRAME_PATH_RE = /^\/(?:_next\/static|\.next\/server)\/[\w./()[\]@+~-]{1,200}$/;
+// A bundle file of Bulwark without origin: /_next/static/... or /.next/server/...,
+// or the desktop app's main process: /desktop/...
+const FRAME_PATH_RE = /^\/(?:_next\/static|\.next\/server|desktop)\/[\w./()[\]@+~-]{1,200}$/;
 // Bulwark's fixed error codes: `serverFail`, `Email/set: overQuota`, `http:503`.
 const ERROR_CODE_RE = /^(?:(?:[A-Z][A-Za-z]{0,40}\/[a-z][A-Za-z]{0,40}: )?[a-z][A-Za-z]{1,40}|http:\d{3})$/;
 

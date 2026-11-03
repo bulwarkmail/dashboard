@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validate } from './validate.js';
+import { validate, validateErrorBatch } from './validate.js';
 
 const base = {
   schema: '1',
@@ -25,4 +25,22 @@ test('falls back to today, without the time, when ts is missing', () => {
   assert.ok(clean);
   assert.match(clean.ts, /^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
   assert.equal(clean.ts.slice(0, 10), new Date().toISOString().slice(0, 10));
+});
+
+test('keeps the desktop platform, and still turns an unknown one into unknown', () => {
+  assert.equal(validate({ ...base, platform: 'desktop', build: 'desktop.instance.beta' })?.platform, 'desktop');
+  assert.equal(validate({ ...base, platform: 'desktop', build: 'desktop.instance.beta' })?.build, 'desktop.instance.beta');
+  assert.equal(validate({ ...base, platform: 'toaster' })?.platform, 'unknown');
+});
+
+test('takes a main-process frame of the desktop app in an error batch, and no path on a disk', () => {
+  const batch = (path: string) => ({
+    schema: '1',
+    instance_id: base.instance_id,
+    day: new Date().toISOString().slice(0, 10),
+    errors: [{ name: 'TypeError', fingerprint: '0123456789abcdef', frames: [{ path, line: 1, col: 2, debug_id: null }], version: '0.3.0+desktop', count: '1', days: 1 }],
+  });
+  assert.ok(validateErrorBatch(batch('/desktop/main.mjs')));
+  assert.equal(validateErrorBatch(batch('C:/Users/linus/app.asar/dist/main.mjs')), null);
+  assert.equal(validateErrorBatch(batch('/home/linus/main.mjs')), null);
 });

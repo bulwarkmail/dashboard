@@ -10,7 +10,7 @@
 // https://bulwarkmail.org/docs/legal/privacy/telemetry
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SEMVER_LIKE_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[+-][\w.-]+)?$/;
+const SEMVER_LIKE_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[\w.-]+)?(?:\+[\w.-]+)?$/;
 const SHORT_TEXT_RE = /^[\w.+-]{1,64}$/;
 
 const PLATFORMS = new Set(['docker', 'bare', 'k8s', 'desktop', 'unknown']);

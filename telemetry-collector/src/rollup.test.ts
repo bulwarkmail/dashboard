@@ -63,3 +63,34 @@ test('the rollup deletes error counts and forward marks past the retention windo
     assert.deepEqual(del.params, [cutoff]);
   }
 });
+
+test('the daily rollup leaves desktop out of everything but the platform mix', async (t) => {
+  const calls: string[] = [];
+  t.mock.method(pool, 'query', async (sql: string) => {
+    calls.push(sql.replace(/\s+/g, ' ').trim());
+    return { rows: [{ id: 1, day: '2026-11-03' }], rowCount: 0 };
+  });
+  await runRollup();
+  const stats = calls.find((c) => c.includes('AS by_platform'));
+  assert.ok(stats, 'no rollup query');
+  assert.match(stats, /FROM server_base\)::int AS active_instances/);
+  for (const field of ['by_version', 'by_os_family', 'account_buckets']) {
+    assert.match(stats, new RegExp(`FROM server_base GROUP BY [a-z_]+\\) x\\) AS ${field}`), field);
+  }
+  assert.match(stats, /FROM server_base, jsonb_object_keys\(features\) k/);
+  // The platform mix is where desktop shows.
+  assert.match(stats, /FROM base GROUP BY platform\) x\) AS by_platform/);
+  assert.match(stats, /server_base AS \(SELECT \* FROM base WHERE NOT desktop\)/);
+});
+
+test('the rollup doesn\'t add desktop to the instances ever seen', async (t) => {
+  const calls: string[] = [];
+  t.mock.method(pool, 'query', async (sql: string) => {
+    calls.push(sql.replace(/\s+/g, ' ').trim());
+    return { rows: [{ id: 1 }], rowCount: 0 };
+  });
+  await runRollup();
+  const upsert = calls.find((c) => c.startsWith('INSERT INTO instance_meta'));
+  assert.ok(upsert, 'no upsert');
+  assert.match(upsert, /NOT LIKE 'desktop\.%'/);
+});

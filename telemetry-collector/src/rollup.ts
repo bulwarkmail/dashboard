@@ -38,6 +38,7 @@ export async function runRollup(): Promise<void> {
       INSERT INTO instance_meta (instance_id, first_seen, last_seen, days_seen)
       SELECT instance_id, MIN(day), MAX(day), COUNT(DISTINCT day)
       FROM heartbeats
+      WHERE COALESCE(payload->>'build', '') NOT LIKE 'desktop.%'
       GROUP BY instance_id
       ON CONFLICT (instance_id) DO UPDATE SET
         first_seen = LEAST(instance_meta.first_seen, EXCLUDED.first_seen),
@@ -99,21 +100,25 @@ async function rollupDay(day: string): Promise<void> {
          (payload->>'version')            AS version,
          (payload->>'os_family')          AS os_family,
          (payload->'features')            AS features,
-         (payload->'counts'->>'accounts') AS accounts_bucket
+         (payload->'counts'->>'accounts') AS accounts_bucket,
+         (COALESCE(payload->>'build', '') LIKE 'desktop.%') AS desktop
        FROM src
-     )
+     ),
+     -- A desktop app is one person, and in instance mode reports no features or
+     -- accounts of its own. Only the platform mix counts it.
+     server_base AS (SELECT * FROM base WHERE NOT desktop)
      SELECT
-       (SELECT count(*) FROM src)::int AS active_instances,
+       (SELECT count(*) FROM server_base)::int AS active_instances,
        (SELECT jsonb_object_agg(platform, c) FROM (SELECT platform, count(*) AS c FROM base GROUP BY platform) x)         AS by_platform,
-       (SELECT jsonb_object_agg(version,  c) FROM (SELECT version,  count(*) AS c FROM base GROUP BY version)  x)         AS by_version,
-       (SELECT jsonb_object_agg(os_family,c) FROM (SELECT os_family,count(*) AS c FROM base GROUP BY os_family) x)        AS by_os_family,
+       (SELECT jsonb_object_agg(version,  c) FROM (SELECT version,  count(*) AS c FROM server_base GROUP BY version)  x)         AS by_version,
+       (SELECT jsonb_object_agg(os_family,c) FROM (SELECT os_family,count(*) AS c FROM server_base GROUP BY os_family) x)        AS by_os_family,
        (SELECT jsonb_object_agg(k, c)
           FROM (
             SELECT k, count(*) FILTER (WHERE (features ->> k)::boolean) AS c
-            FROM base, jsonb_object_keys(features) k
+            FROM server_base, jsonb_object_keys(features) k
             GROUP BY k
           ) x)                                                                                                            AS feature_adoption,
-       (SELECT jsonb_object_agg(accounts_bucket, c) FROM (SELECT accounts_bucket, count(*) AS c FROM base GROUP BY accounts_bucket) x) AS account_buckets`,
+       (SELECT jsonb_object_agg(accounts_bucket, c) FROM (SELECT accounts_bucket, count(*) AS c FROM server_base GROUP BY accounts_bucket) x) AS account_buckets`,
     [day],
   );
   const row = r.rows[0];

@@ -44,3 +44,21 @@ test('takes a main-process frame of the desktop app in an error batch, and no pa
   assert.equal(validateErrorBatch(batch('C:/Users/linus/app.asar/dist/main.mjs')), null);
   assert.equal(validateErrorBatch(batch('/home/linus/main.mjs')), null);
 });
+
+test('takes a prerelease with build metadata, as a beta of the desktop app reports', () => {
+  assert.equal(validate({ ...base, version: '0.3.0-beta.1+desktop' })?.version, '0.3.0-beta.1+desktop');
+  assert.equal(validate({ ...base, version: '1.20.0+desktop' })?.version, '1.20.0+desktop');
+  assert.equal(validate({ ...base, version: '1.20.0-rc.2' })?.version, '1.20.0-rc.2');
+  assert.equal(validate({ ...base, version: '1.20.0+a+b' }), null);
+  assert.equal(validate({ ...base, version: '1.20.0-beta/../x' }), null);
+});
+
+test('takes that version on an error in a batch too', () => {
+  const clean = validateErrorBatch({
+    schema: '1',
+    instance_id: base.instance_id,
+    day: new Date().toISOString().slice(0, 10),
+    errors: [{ name: 'TypeError', fingerprint: '0123456789abcdef', frames: [], version: '0.3.0-beta.1+desktop', count: '1', days: 1 }],
+  });
+  assert.equal(clean?.errors[0].version, '0.3.0-beta.1+desktop');
+});

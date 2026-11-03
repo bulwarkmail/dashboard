@@ -24,7 +24,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT count(DISTINCT instance_id) AS value FROM heartbeats WHERE day >= current_date - interval '7 days'"
+          "rawSql": "SELECT count(DISTINCT instance_id) AS value FROM heartbeats WHERE day >= current_date - interval '7 days' AND COALESCE(payload->>'build', '') NOT LIKE 'desktop.%'"
         }
       ]
     },
@@ -42,7 +42,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT count(DISTINCT instance_id) AS value FROM heartbeats WHERE day >= current_date - interval '30 days'"
+          "rawSql": "SELECT count(DISTINCT instance_id) AS value FROM heartbeats WHERE day >= current_date - interval '30 days' AND COALESCE(payload->>'build', '') NOT LIKE 'desktop.%'"
         }
       ]
     },
@@ -99,7 +99,7 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "WITH days AS (SELECT generate_series(date_trunc('day', $__timeFrom()::timestamptz)::date, date_trunc('day', $__timeTo()::timestamptz)::date, interval '1 day')::date AS day) SELECT d.day::timestamptz AS time, COALESCE(count(DISTINCT h.instance_id), 0) AS active FROM days d LEFT JOIN heartbeats h ON h.day = d.day GROUP BY d.day ORDER BY d.day"
+          "rawSql": "WITH days AS (SELECT generate_series(date_trunc('day', $__timeFrom()::timestamptz)::date, date_trunc('day', $__timeTo()::timestamptz)::date, interval '1 day')::date AS day) SELECT d.day::timestamptz AS time, COALESCE(count(DISTINCT h.instance_id), 0) AS active FROM days d LEFT JOIN heartbeats h ON h.day = d.day AND COALESCE(payload->>'build', '') NOT LIKE 'desktop.%' GROUP BY d.day ORDER BY d.day"
         }
       ]
     },
@@ -166,7 +166,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC) SELECT count(*) FILTER (WHERE (payload->>'os_family') = 'linux')   AS linux, count(*) FILTER (WHERE (payload->>'os_family') = 'darwin')  AS darwin, count(*) FILTER (WHERE (payload->>'os_family') = 'windows') AS windows, count(*) FILTER (WHERE (payload->>'os_family') = 'unknown') AS unknown FROM latest"
+          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' AND COALESCE(payload->>'build', '') NOT LIKE 'desktop.%' ORDER BY instance_id, day DESC) SELECT count(*) FILTER (WHERE (payload->>'os_family') = 'linux')   AS linux, count(*) FILTER (WHERE (payload->>'os_family') = 'darwin')  AS darwin, count(*) FILTER (WHERE (payload->>'os_family') = 'windows') AS windows, count(*) FILTER (WHERE (payload->>'os_family') = 'unknown') AS unknown FROM latest"
         }
       ]
     },
@@ -182,7 +182,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC), per_bucket AS (SELECT (payload->'counts'->>'accounts') AS bucket, count(*) AS instances FROM latest GROUP BY 1) SELECT b.bucket, COALESCE(p.instances, 0) AS instances FROM (VALUES ('0',0),('1',1),('2-5',2),('6-10',3),('11-50',4),('51-200',5),('201+',6)) AS b(bucket, ord) LEFT JOIN per_bucket p USING (bucket) ORDER BY b.ord"
+          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' AND COALESCE(payload->>'build', '') NOT LIKE 'desktop.%' ORDER BY instance_id, day DESC), per_bucket AS (SELECT (payload->'counts'->>'accounts') AS bucket, count(*) AS instances FROM latest GROUP BY 1) SELECT b.bucket, COALESCE(p.instances, 0) AS instances FROM (VALUES ('0',0),('1',1),('2-5',2),('6-10',3),('11-50',4),('51-200',5),('201+',6)) AS b(bucket, ord) LEFT JOIN per_bucket p USING (bucket) ORDER BY b.ord"
         }
       ]
     },
@@ -199,7 +199,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC), counted AS (SELECT (payload->>'version') AS version, count(*) AS instances FROM latest GROUP BY 1) SELECT version, instances FROM counted ORDER BY string_to_array(regexp_replace(version, '[+-].*$', ''), '.')::int[] DESC NULLS LAST, version DESC LIMIT 25"
+          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' AND COALESCE(payload->>'build', '') NOT LIKE 'desktop.%' ORDER BY instance_id, day DESC), counted AS (SELECT (payload->>'version') AS version, count(*) AS instances FROM latest GROUP BY 1) SELECT version, instances FROM counted ORDER BY string_to_array(regexp_replace(version, '[+-].*$', ''), '.')::int[] DESC NULLS LAST, version DESC LIMIT 25"
         }
       ]
     },
@@ -217,7 +217,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' ORDER BY instance_id, day DESC), feats AS (SELECT key AS feature, count(*) FILTER (WHERE value::text = 'true') AS enabled, count(*) AS total FROM latest, jsonb_each_text(payload->'features') GROUP BY key) SELECT feature, CASE WHEN total = 0 THEN 0 ELSE enabled::float / total END AS pct FROM feats WHERE feature IN ('calendar','contacts','files','extensions','oauth_enabled','smime_enabled') ORDER BY pct DESC, feature"
+          "rawSql": "WITH latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats WHERE day >= current_date - interval '7 days' AND COALESCE(payload->>'build', '') NOT LIKE 'desktop.%' ORDER BY instance_id, day DESC), feats AS (SELECT key AS feature, count(*) FILTER (WHERE value::text = 'true') AS enabled, count(*) AS total FROM latest, jsonb_each_text(payload->'features') GROUP BY key) SELECT feature, CASE WHEN total = 0 THEN 0 ELSE enabled::float / total END AS pct FROM feats WHERE feature IN ('calendar','contacts','files','extensions','oauth_enabled','smime_enabled') ORDER BY pct DESC, feature"
         }
       ]
     },

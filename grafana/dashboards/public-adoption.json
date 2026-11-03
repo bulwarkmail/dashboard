@@ -60,7 +60,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT count(DISTINCT instance_id) AS value FROM heartbeats WHERE day >= ((now() - interval '1 hour')::date - interval '30 days') AND day <= (now() - interval '1 hour')::date"
+          "rawSql": "SELECT count(DISTINCT instance_id) AS value FROM heartbeats WHERE day >= ((now() - interval '1 hour')::date - interval '30 days') AND day <= (now() - interval '1 hour')::date AND COALESCE(payload->>'build', '') NOT LIKE 'desktop.%'"
         }
       ]
     },
@@ -175,7 +175,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH win AS (SELECT (now() - interval '1 hour')::date AS to_d, ((now() - interval '1 hour')::date - interval '7 days')::date AS from_d), latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats, win WHERE day BETWEEN win.from_d AND win.to_d ORDER BY instance_id, day DESC), counted AS (SELECT (payload->>'version') AS version, count(*) AS instances FROM latest GROUP BY 1) SELECT version, instances FROM counted ORDER BY string_to_array(regexp_replace(version, '[+-].*$', ''), '.')::int[] DESC NULLS LAST, version DESC LIMIT 25"
+          "rawSql": "WITH win AS (SELECT (now() - interval '1 hour')::date AS to_d, ((now() - interval '1 hour')::date - interval '7 days')::date AS from_d), latest AS (SELECT DISTINCT ON (instance_id) instance_id, payload FROM heartbeats, win WHERE day BETWEEN win.from_d AND win.to_d AND COALESCE(payload->>'build', '') NOT LIKE 'desktop.%' ORDER BY instance_id, day DESC), counted AS (SELECT (payload->>'version') AS version, count(*) AS instances FROM latest GROUP BY 1) SELECT version, instances FROM counted ORDER BY string_to_array(regexp_replace(version, '[+-].*$', ''), '.')::int[] DESC NULLS LAST, version DESC LIMIT 25"
         }
       ]
     },

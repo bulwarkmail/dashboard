@@ -58,3 +58,25 @@ test('a v2 heartbeat stores its errors for the day before, replacing that day\'s
 test('dayBefore crosses month ends', () => {
   assert.equal(dayBefore('2026-12-01'), '2026-11-30');
 });
+
+const desktop = { ...v1, platform: 'desktop', build: 'desktop.instance.stable' };
+
+test('a desktop heartbeat keeps only the day it arrived, not the time', async (t) => {
+  const calls = mockDb(t);
+  await storeHeartbeat(validate(desktop)!);
+  assert.match(calls[0].sql, /VALUES \(\$1, \$2, \$3::jsonb, date_trunc\('day', now\(\)\)\)/);
+  assert.match(calls[0].sql, /received_at = date_trunc\('day', now\(\)\)/);
+});
+
+test('a server\'s heartbeat keeps its time, as before', async (t) => {
+  const calls = mockDb(t);
+  await storeHeartbeat(validate({ ...v1, platform: 'docker' })!);
+  assert.match(calls[0].sql, /VALUES \(\$1, \$2, \$3::jsonb, now\(\)\)/);
+  assert.equal(calls[0].sql.includes('date_trunc'), false);
+});
+
+test('a desktop heartbeat isn\'t counted among the instances ever seen', async (t) => {
+  const calls = mockDb(t);
+  await storeHeartbeat(validate(desktop)!);
+  assert.equal(calls.some((c) => c.sql.includes('instance_meta')), false);
+});

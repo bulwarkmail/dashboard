@@ -16,14 +16,19 @@ export function dayBefore(day: string): string {
 export async function storeHeartbeat(clean: CleanHeartbeat | CleanHeartbeatV2): Promise<void> {
   const day = clean.ts.slice(0, 10);
   const { errors, ...stored } = clean as CleanHeartbeatV2;
+  // A desktop app is one person: the time it starts each day says when they work.
+  const desktop = clean.platform === 'desktop';
+  const receivedAt = desktop ? `date_trunc('day', now())` : 'now()';
   await pool.query(
     `INSERT INTO heartbeats (instance_id, day, payload, received_at)
-     VALUES ($1, $2, $3::jsonb, now())
+     VALUES ($1, $2, $3::jsonb, ${receivedAt})
      ON CONFLICT (instance_id, day) DO UPDATE SET
        payload = EXCLUDED.payload,
-       received_at = now()`,
+       received_at = ${receivedAt}`,
     [clean.instance_id, day, JSON.stringify(stored)],
   );
+  // "Instances ever seen" counts servers.
+  if (desktop) return;
   // Maintain instance_meta inline so panels keyed off first/last/days_seen
   // are correct in real time without waiting for the daily rollup.
   await pool.query(

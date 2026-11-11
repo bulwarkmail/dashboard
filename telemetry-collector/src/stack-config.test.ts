@@ -116,7 +116,7 @@ test('Umami\'s app stays closed until deploy.sh has replaced its default login',
   assert.match(vhost, /set\s+\$umami_app_open\s+"\$\{UMAMI_APP_OPEN\}"\s*;/);
   assert.match(app, /^location \/ \{\s*if \(\$umami_app_open != "yes"\) \{\s*return 404;/);
   const deploy = withoutComments(read('deploy.sh'));
-  assert.match(deploy, /export UMAMI_APP_OPEN=no/);
+  assert.match(deploy, /^UMAMI_APP_OPEN=no$/m);
   assert.match(deploy, /render_vhost umami\.conf\.template\s+"\$UMAMI_DOMAIN"\s+UMAMI_DOMAIN UMAMI_APP_OPEN/);
   // Opened only after the login was checked or replaced through Umami's API.
   const opened = deploy.indexOf('UMAMI_APP_OPEN=yes');
@@ -130,13 +130,35 @@ test('the collector runs as its own account, which owns the clones and reads onl
   const deploy = withoutComments(read('deploy.sh'));
   assert.match(deploy, /useradd --system[^\n]*\\?\n?[^\n]*bulwark-collector/);
   assert.match(deploy, /chown -R bulwark-collector:bulwark-collector data\/repos/);
-  // .env and the App Store Connect key: readable through the account's group, by nobody else.
-  assert.match(deploy, /chgrp bulwark-collector \.env\s*\n\s*chmod 640 \.env/);
+  // Its own variables in collector/.env and the App Store Connect key: readable through the
+  // account's group, by nobody else.
+  assert.match(deploy, /grep -E '\^\(GITHUB_TOKEN\|[^']*\)=' \.env > collector\/\.env\.new/);
+  assert.match(deploy, /chgrp bulwark-collector collector\/\.env\.new\s*\n\s*chmod 640 collector\/\.env\.new/);
   assert.match(deploy, /chgrp bulwark-collector "\$asc_key"\s*\n\s*chmod 640 "\$asc_key"/);
-  // A running collector started as another account is started anew, not reloaded.
-  assert.match(deploy, /pm2 delete bulwark-dashboard-collector/);
+  // The stack's .env is root's alone once the collector reads its own file.
+  assert.match(deploy, /chgrp root \.env\s*\n\s*chmod 600 \.env/);
+  // A running app started as another account, or with variables from .env, is started anew.
+  assert.match(deploy, /needs_new_start "\$name" "\$want"; then[\s\S]*?pm2_clean "\$home" delete "\$name"\s*\n\s*pm2_clean "\$home" start "\$eco"/);
   // All of it before the collector starts.
-  assert.ok(deploy.indexOf('useradd --system') < deploy.indexOf('pm2 start "$APP_DIR/collector/ecosystem.config.cjs"'));
+  const started = deploy.indexOf('deploy_app collector bulwark-dashboard-collector');
+  assert.ok(started > 0 && deploy.indexOf('useradd --system') < started && deploy.indexOf('mv -f collector/.env.new collector/.env') < started);
+});
+
+test('the apps get no secret through pm2, and pm2\'s saved list is root\'s alone', () => {
+  const deploy = withoutComments(read('deploy.sh'));
+  // .env is read, not exported, so no command the script runs inherits it.
+  assert.doesNotMatch(deploy, /set -a/);
+  assert.doesNotMatch(deploy, /^\s*export\s/m);
+  // pm2 runs with PATH and HOME only; nothing calls pm2 directly.
+  assert.match(deploy, /env -i PATH="\$PATH" HOME="\$home" PM2_HOME="\$PM2_DIR" pm2 "\$@"/);
+  for (const line of deploy.split('\n').filter((l) => /\bpm2\s+("\$@"|start|reload|delete|save|describe|pid|jlist|kill|update)\b/.test(l))) {
+    assert.match(line, /pm2_clean|env -i PATH="\$PATH" HOME="\$home" PM2_HOME="\$PM2_DIR" pm2/, `pm2 called with the script's environment: ${line.trim()}`);
+  }
+  // The collector's account has its own home; the saved list is mode 600.
+  assert.match(deploy, /deploy_app collector bulwark-dashboard-collector "\$APP_DIR\/data\/repos"/);
+  assert.match(deploy, /for f in "\$PM2_DIR"\/dump\.pm2\*; do\s*\n\s*if \[ -e "\$f" \]; then chmod 600 "\$f"; fi/);
+  // envsubst gets only the values a template names.
+  assert.match(deploy, /env -i PATH="\$PATH" "\$\{values\[@\]\}" envsubst "\$vars"/);
 });
 
 test('signing in through the identity provider does not make everyone a Viewer', () => {

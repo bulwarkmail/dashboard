@@ -70,7 +70,10 @@ if [ "$FIRST_RUN" = 1 ]; then
   log "Wrote .env. Edit GRAFANA_DOMAIN / UMAMI_DOMAIN / TELEMETRY_DOMAIN / VERSION_DOMAIN / LE_EMAIL, then re-run."
   exit 0
 fi
-set -a; . ./.env; set +a
+# Read, not exported: nothing this script starts gets the secrets through its
+# environment. docker compose reads .env itself, the apps read it themselves,
+# render_vhost passes each template only the values it names.
+. ./.env
 
 # Required from .env (no defaults — these are site-specific).
 : "${GRAFANA_DOMAIN:?set GRAFANA_DOMAIN in .env}"
@@ -86,8 +89,9 @@ set -a; . ./.env; set +a
 # doesn't blank the redirect target before bootstrap finishes.
 : "${GRAFANA_PUBLIC_DASHBOARD_TOKEN:=pending}"
 # Umami's vhost serves only the tracker until step 9a has made sure Umami's
-# default login is gone.
-export UMAMI_APP_OPEN=no
+# default login is gone. (render_vhost reads it by name.)
+# shellcheck disable=SC2034
+UMAMI_APP_OPEN=no
 
 command -v envsubst >/dev/null || die "envsubst not found — install gettext-base"
 
@@ -120,10 +124,10 @@ rm -f "$HTPASSWD_DIR/grafana"
 # nginx's own $host / $remote_addr) is left literal.
 render_vhost() {
   local template="$1" domain="$2"; shift 2
-  local vars=""
-  for v in "$@"; do vars="$vars \${$v}"; done
+  local vars="" values=()
+  for v in "$@"; do vars="$vars \${$v}"; values+=("$v=${!v}"); done
   log "Rendering nginx vhost: $domain"
-  envsubst "$vars" < "$APP_DIR/nginx/$template" > "$NGINX_SITES_AVAIL/$domain"
+  env -i PATH="$PATH" "${values[@]}" envsubst "$vars" < "$APP_DIR/nginx/$template" > "$NGINX_SITES_AVAIL/$domain"
   ln -sf "$NGINX_SITES_AVAIL/$domain" "$NGINX_SITES_ENABLED/$domain"
 }
 
@@ -211,9 +215,10 @@ fi
 # --- 6b. the collector's own account --------------------------------------
 # The GitHub collector clones and unpacks repositories. It runs as the system
 # account bulwark-collector (uid/gid in collector/ecosystem.config.cjs), which
-# owns the clones in data/repos and nothing else of the stack. It reads .env
-# and the App Store Connect key through their group, which has no other
-# member; other accounts can't read them.
+# owns the clones in data/repos and nothing else of the stack. It reads its
+# own variables from collector/.env and the App Store Connect key through
+# their group, which has no other member; other accounts can't read them.
+# All of this happens before the collector is started below.
 if ! id -u bulwark-collector >/dev/null 2>&1; then
   log "Creating the system account bulwark-collector"
   useradd --system --user-group --home-dir "$APP_DIR/data/repos" --no-create-home \
@@ -221,8 +226,21 @@ if ! id -u bulwark-collector >/dev/null 2>&1; then
 fi
 chown -R bulwark-collector:bulwark-collector data/repos
 chmod 700 data/repos
-chgrp bulwark-collector .env
-chmod 640 .env
+# The collector's variables only: its token, its database password, its settings.
+(umask 077; grep -E '^(GITHUB_TOKEN|GITHUB_ORG|POSTGRES_DASHBOARD_PASSWORD|PG_HOST|PG_PORT|PG_USER|PG_DATABASE|GHCR_PACKAGES|COLLECTOR_[A-Z0-9_]+|ASC_[A-Z0-9_]+)=' .env > collector/.env.new || true)
+chgrp bulwark-collector collector/.env.new
+chmod 640 collector/.env.new
+mv -f collector/.env.new collector/.env
+# Until the collector reads collector/.env (collector/src/env.ts), it reads the
+# stack's .env, which then has to stay readable for its group.
+if grep -qF "path.resolve(here, '..', '.env')" collector/src/env.ts; then
+  chgrp root .env
+  chmod 600 .env
+else
+  log "WARN: the collector still reads the stack's .env; it stays readable for the bulwark-collector group"
+  chgrp bulwark-collector .env
+  chmod 640 .env
+fi
 chgrp bulwark-collector secrets
 if [ -n "${ASC_KEY_FILE:-}" ]; then
   # Relative to the collector's folder, where pm2 starts it.
@@ -241,77 +259,84 @@ for f in collector.out.log collector.err.log; do
   chmod 640 "/var/log/bulwark-dashboard/$f"
 done
 
-# --- 7. collector (pm2) ----------------------------------------------------
-if [ -d "$APP_DIR/collector" ]; then
-  log "Building collector"
+# pm2 hands an app the environment of the shell that starts it and writes it
+# into its saved process list. The apps read their .env themselves, so pm2 is
+# called with PATH and HOME only (HOME: the app's account's home).
+PM2_DIR="${PM2_HOME:-$HOME/.pm2}"
+pm2_clean() { # home, pm2 arguments...
+  local home="$1"; shift
+  env -i PATH="$PATH" HOME="$home" PM2_HOME="$PM2_DIR" pm2 "$@"
+}
+
+# Whether a running app has to be started anew rather than reloaded: pm2 keeps
+# a process's environment and account across reloads, so a process that still
+# carries a variable named in .env, or runs as another account than its
+# ecosystem file names, is deleted and started once. Only names are compared;
+# no value is printed.
+needs_new_start() { # name, account the ecosystem file names (may be empty)
+  local name="$1" want="$2" pid uid=""
+  if pm2_clean "$HOME" jlist 2>/dev/null | node -e '
+      const keys = new Set(require("fs").readFileSync(process.argv[1], "utf8").split("\n")
+        .map((line) => (/^([A-Za-z_][A-Za-z0-9_]*)=/.exec(line) || [])[1]).filter(Boolean));
+      let s = "";
+      process.stdin.on("data", (d) => { s += d; }).on("end", () => {
+        const apps = JSON.parse(s.slice(s.indexOf("[")));
+        const app = apps.find((a) => a.name === process.argv[2]);
+        const env = app ? { ...(app.pm2_env || {}), ...((app.pm2_env && app.pm2_env.env) || {}) } : {};
+        process.exit(Object.keys(env).some((k) => keys.has(k)) ? 0 : 1);
+      });' "$APP_DIR/.env" "$name"; then
+    return 0
+  fi
+  [ -n "$want" ] || return 1
+  pid=$(pm2_clean "$HOME" pid "$name" 2>/dev/null || true)
+  if [ -n "$pid" ] && [ "$pid" != 0 ]; then uid=$(ps -o uid= -p "$pid" 2>/dev/null | tr -d ' ' || true); fi
+  [ "$uid" != "$(id -u "$want")" ]
+}
+
+# Build one package and start or reload its pm2 app.
+deploy_app() { # folder, pm2 name, home of its account
+  local dir="$APP_DIR/$1" name="$2" home="$3" eco want
+  eco="$dir/ecosystem.config.cjs"
+  [ -d "$dir" ] || return 0
+  log "Building $1"
   mkdir -p /var/log/bulwark-dashboard
-  pushd "$APP_DIR/collector" >/dev/null
-  npm ci --no-audit --no-fund
+  pushd "$dir" >/dev/null
+  if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
   npm run build
   popd >/dev/null
-  # pm2 keeps the account a process was started with, also on reload: when
-  # the config names another account than the running process has, the
-  # process is deleted and started once.
-  want_user=$(node -e 'process.stdout.write(String(require(process.argv[1]).apps[0].uid || ""))' "$APP_DIR/collector/ecosystem.config.cjs")
-  if pm2 describe bulwark-dashboard-collector >/dev/null 2>&1; then
-    pid=$(pm2 pid bulwark-dashboard-collector 2>/dev/null || true)
-    running_uid=""
-    if [ -n "$pid" ] && [ "$pid" != 0 ]; then running_uid=$(ps -o uid= -p "$pid" 2>/dev/null | tr -d ' ' || true); fi
-    if [ -n "$want_user" ] && [ "$running_uid" != "$(id -u "$want_user")" ]; then
-      log "Starting the collector anew as $want_user"
-      pm2 delete bulwark-dashboard-collector
-      pm2 start "$APP_DIR/collector/ecosystem.config.cjs"
-      pm2 save
+  want=$(node -e 'process.stdout.write(String(require(process.argv[1]).apps[0].uid || ""))' "$eco")
+  if pm2_clean "$home" describe "$name" >/dev/null 2>&1; then
+    if needs_new_start "$name" "$want"; then
+      log "Starting $name anew${want:+ as $want}, with no variables from .env"
+      pm2_clean "$home" delete "$name"
+      pm2_clean "$home" start "$eco"
     else
-      log "Reloading collector"
-      pm2 reload "$APP_DIR/collector/ecosystem.config.cjs" --update-env
+      log "Reloading $name"
+      pm2_clean "$home" reload "$eco" --update-env
     fi
   else
-    log "Starting collector"
-    pm2 start "$APP_DIR/collector/ecosystem.config.cjs"
-    pm2 save
+    log "Starting $name"
+    pm2_clean "$home" start "$eco"
   fi
-fi
+}
+
+# --- 7. collector (pm2) ----------------------------------------------------
+deploy_app collector bulwark-dashboard-collector "$APP_DIR/data/repos"
 
 # --- 8. telemetry-collector (pm2) -----------------------------------------
-if [ -d "$APP_DIR/telemetry-collector" ]; then
-  log "Building telemetry-collector"
-  mkdir -p /var/log/bulwark-dashboard
-  pushd "$APP_DIR/telemetry-collector" >/dev/null
-  npm ci --no-audit --no-fund
-  npm run build
-  popd >/dev/null
-  if pm2 describe bulwark-telemetry-collector >/dev/null 2>&1; then
-    log "Reloading telemetry-collector"
-    pm2 reload "$APP_DIR/telemetry-collector/ecosystem.config.cjs" --update-env
-  else
-    log "Starting telemetry-collector"
-    pm2 start "$APP_DIR/telemetry-collector/ecosystem.config.cjs"
-    pm2 save
-  fi
-fi
+deploy_app telemetry-collector bulwark-telemetry-collector "$HOME"
 
 # --- 8b. version-server (pm2) ---------------------------------------------
-if [ -d "$APP_DIR/version-server" ]; then
-  log "Building version-server"
-  mkdir -p /var/log/bulwark-dashboard
-  pushd "$APP_DIR/version-server" >/dev/null
-  if [ -f package-lock.json ]; then
-    npm ci --no-audit --no-fund
-  else
-    npm install --no-audit --no-fund
-  fi
-  npm run build
-  popd >/dev/null
-  if pm2 describe bulwark-version-server >/dev/null 2>&1; then
-    log "Reloading version-server"
-    pm2 reload "$APP_DIR/version-server/ecosystem.config.cjs" --update-env
-  else
-    log "Starting version-server"
-    pm2 start "$APP_DIR/version-server/ecosystem.config.cjs"
-    pm2 save
-  fi
-fi
+deploy_app version-server bulwark-version-server "$HOME"
+
+# The saved process list (twice, so the backup copy is the new list too),
+# readable by root only.
+pm2_clean "$HOME" save --force >/dev/null
+pm2_clean "$HOME" save --force >/dev/null
+chmod 700 "$PM2_DIR"
+for f in "$PM2_DIR"/dump.pm2*; do
+  if [ -e "$f" ]; then chmod 600 "$f"; fi
+done
 
 # --- 8c. Grafana's read-only database logins, again ------------------------
 # Umami creates its tables on its first start; wait for them, so the tables
@@ -363,6 +388,7 @@ secure_umami() {
 }
 
 if secure_umami; then
+  # shellcheck disable=SC2034
   UMAMI_APP_OPEN=yes
   render_vhost umami.conf.template "$UMAMI_DOMAIN" UMAMI_DOMAIN UMAMI_APP_OPEN
   nginx -t && systemctl reload nginx

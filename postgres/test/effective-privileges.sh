@@ -156,8 +156,16 @@ $sources
 EOF
 
 # Every panel and variable query of every dashboard, as its data source's role. Grafana's macros
-# become fixed values; the tables are empty, so this checks rights and syntax, not results.
+# become fixed values. The telemetry tables get a few rows with versions as an older collector
+# stored them, which every panel that sorts by version has to cope with; otherwise the tables are
+# empty, so this checks rights and syntax, not results.
 echo "== the dashboards' queries"
+psql_as telemetry telemetry "INSERT INTO heartbeats (instance_id, day, payload)
+    SELECT gen_random_uuid(), current_date, jsonb_build_object('version', v, 'platform', 'docker', 'build', 'release')
+      FROM unnest(ARRAY['1.21.1', '1.21.0-beta.2', '1.20.0+desktop.abc1234', '99999999999.0.0', '1.2.99999999999']) v;
+  INSERT INTO error_counts (instance_id, day, fingerprint, version, name, frames, count_bucket, days)
+    SELECT gen_random_uuid(), current_date - 1, '0123456789abcdef', v, 'TypeError', '[]', '1', 1
+      FROM unnest(ARRAY['1.21.1', '1.21.0-beta.2', '99999999999.0.0', '1.2.99999999999']) v" >/dev/null || bad "telemetry rows"
 queries=$(node -e '
 const fs = require("fs"), path = require("path");
 const [dir, sourcesText] = process.argv.slice(1);

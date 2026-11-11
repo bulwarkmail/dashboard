@@ -35,6 +35,15 @@ CREATE TABLE IF NOT EXISTS expired_instances (
   count  integer NOT NULL
 );
 
+-- Heartbeats per UTC day (the day they arrived) from instance ids the
+-- collector had not seen before. Those of the first
+-- TELEMETRY_MAX_NEW_INSTANCES_PER_DAY are stored, the count goes on past
+-- that. Only a count, no instance_id.
+CREATE TABLE IF NOT EXISTS new_instance_counts (
+  day    date PRIMARY KEY,
+  count  integer NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS daily_rollups (
   day                  date PRIMARY KEY,
   active_instances     integer NOT NULL,

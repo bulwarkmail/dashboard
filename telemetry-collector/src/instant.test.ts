@@ -136,3 +136,51 @@ test('an instance can post once every 30 seconds', () => {
   assert.equal(limiter.allow('a0c1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b', NOW + 10_000), true);
   assert.equal(limiter.allow(INSTANCE, NOW + 30_000), true);
 });
+
+test('the limiter keeps at most its bound of ids, dropping the oldest, and keeps answering', () => {
+  const limiter = new InstanceLimiter(30_000, 3);
+  const id = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
+  for (let n = 0; n < 1000; n++) assert.equal(limiter.allow(id(n), NOW + n), true);
+  assert.equal(limiter.size, 3);
+  // The three let through last are still limited; the oldest of all was dropped.
+  assert.equal(limiter.allow(id(999), NOW + 1000), false);
+  assert.equal(limiter.allow(id(997), NOW + 1000), false);
+  assert.equal(limiter.allow(id(0), NOW + 1000), true);
+  assert.equal(limiter.size, 3);
+});
+
+test('the limiter forgets ids on its timer once their interval is over, not on a request', () => {
+  const limiter = new InstanceLimiter(30_000);
+  limiter.allow(INSTANCE, NOW);
+  limiter.allow('a0c1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b', NOW + 20_000);
+  // A request walks nothing: both ids are still held.
+  limiter.allow('b0c1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b', NOW + 40_000);
+  assert.equal(limiter.size, 3);
+  limiter.prune(NOW + 40_000);
+  assert.equal(limiter.size, 2);
+  limiter.prune(NOW + 80_000);
+  assert.equal(limiter.size, 0);
+});
+
+test('instant forwards count against the day\'s 100 groups for Bugsink', async (t) => {
+  resetInstantForTests();
+  env.bugsinkTelemetryDsn = DSN;
+  let sentToday = 99;
+  const calls: string[] = [];
+  const record = async (text: string) => {
+    const sql = text.replace(/\s+/g, ' ').trim();
+    calls.push(sql);
+    if (sql.includes(' AS sent')) return { rows: [{ sent: String(sentToday) }], rowCount: 1 };
+    if (sql.startsWith('INSERT INTO error_instant_forwards')) return { rows: [{ ok: 1 }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  };
+  t.mock.method(pool, 'query', record);
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 200 }));
+  const two = [error, { ...error, fingerprint: 'fedcba9876543210' }];
+  assert.equal((await forwardInstant(validateErrorBatch({ ...batch, errors: two }, NOW)!, NOW)).forwarded, 1);
+  sentToday = 100;
+  calls.length = 0;
+  assert.equal((await forwardInstant(validateErrorBatch({ ...batch, errors: two }, NOW)!, NOW + 61_000)).forwarded, 0);
+  assert.equal(calls.some((c) => c.startsWith('INSERT INTO error_instant_forwards')), false);
+  assert.equal(fetchMock.mock.callCount(), 1);
+});

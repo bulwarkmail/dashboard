@@ -42,7 +42,13 @@ export const env = {
   pgPassword: required('POSTGRES_TELEMETRY_PASSWORD'),
   pgDatabase: process.env.TELEMETRY_PG_DB || 'telemetry',
   retentionDays: num('TELEMETRY_RETENTION_DAYS', 90),
+  // Instance ids the collector has not seen before whose heartbeats are
+  // stored per UTC day; past that a new id is answered and not stored.
+  maxNewInstancesPerDay: num('TELEMETRY_MAX_NEW_INSTANCES_PER_DAY', 500),
   // Where complete days of error counts are forwarded (a Sentry-protocol
   // DSN). Empty: nothing is forwarded.
   bugsinkTelemetryDsn: (process.env.BUGSINK_TELEMETRY_DSN ?? '').trim(),
+  // Error groups sent to Bugsink per UTC day, daily and instant forwards
+  // together; the rest wait for the next day.
+  maxForwardedGroupsPerDay: num('TELEMETRY_MAX_FORWARDED_GROUPS_PER_DAY', 100),
 };

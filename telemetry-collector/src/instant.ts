@@ -1,7 +1,7 @@
 import { pool } from './db.js';
 import { env } from './env.js';
 import { log } from './log.js';
-import { SEND_TIMEOUT_MS, buildForwardEvent, envelope, envelopeUrlFor } from './forward.js';
+import { SEND_TIMEOUT_MS, buildForwardEvent, envelope, envelopeUrlFor, forwardBudget } from './forward.js';
 import type { CleanErrorBatch } from './validate.js';
 
 // Instant error counts (POST /v1/errors): instances with the error-count
@@ -19,19 +19,42 @@ export const INSTANT_PER_MINUTE = 30;
 /** One batch per instance per this long. */
 export const INSTANCE_INTERVAL_MS = 30_000;
 
-/** Lets each instance through once per `intervalMs`. In memory; no ids kept past that. */
+/** Ids the limiter keeps at most. */
+export const LIMITER_MAX_IDS = 10_000;
+
+/**
+ * Lets each instance through once per `intervalMs`. In memory, at most
+ * `maxIds` ids: past that, the id let through longest ago is dropped. `prune`,
+ * on a timer, drops the ids whose interval is over, so no id is kept past it;
+ * a request never walks the map.
+ */
 export class InstanceLimiter {
+  // In the order the ids were let through: the oldest first.
   private last = new Map<string, number>();
-  constructor(private readonly intervalMs: number) {}
+  constructor(private readonly intervalMs: number, private readonly maxIds = LIMITER_MAX_IDS) {}
 
   allow(instanceId: string, now = Date.now()): boolean {
     const previous = this.last.get(instanceId);
     if (previous !== undefined && now - previous < this.intervalMs) return false;
-    if (this.last.size > 10_000) {
-      for (const [id, at] of this.last) if (now - at >= this.intervalMs) this.last.delete(id);
-    }
+    this.last.delete(instanceId);
     this.last.set(instanceId, now);
+    if (this.last.size > this.maxIds) {
+      const oldest = this.last.keys().next();
+      if (!oldest.done) this.last.delete(oldest.value);
+    }
     return true;
+  }
+
+  /** Drop the ids whose interval is over. Stops at the first one still inside it. */
+  prune(now = Date.now()): void {
+    for (const [id, at] of this.last) {
+      if (now - at < this.intervalMs) break;
+      this.last.delete(id);
+    }
+  }
+
+  get size(): number {
+    return this.last.size;
   }
 }
 
@@ -86,7 +109,8 @@ export async function storeInstantErrors(batch: CleanErrorBatch): Promise<void> 
 }
 
 /**
- * Send the errors of `batch` no instance reported yet today to Bugsink.
+ * Send the errors of `batch` no instance reported yet today to Bugsink, while
+ * the day's budget of forwarded groups lasts (`forwardBudget`).
  * Each is claimed in error_instant_forwards first, so it goes once across
  * instances and concurrent batches; a failed send gives the claim back.
  * Never throws.
@@ -97,7 +121,9 @@ export async function forwardInstant(batch: CleanErrorBatch, now = Date.now()): 
   const target = envelopeUrlFor(env.bugsinkTelemetryDsn);
   if (!target) return result;
   try {
+    const budget = await forwardBudget(now);
     for (const error of batch.errors) {
+      if (result.forwarded >= budget) break;
       if (!takeSlot(now)) break;
       const claim = await pool.query(
         `INSERT INTO error_instant_forwards (day, fingerprint, version) VALUES ($1, $2, $3)

@@ -109,7 +109,24 @@ export function lastCompleteDay(now = Date.now()): string {
   return new Date(now - 2 * 86_400_000).toISOString().slice(0, 10);
 }
 
-/** Forward every complete group not forwarded yet. Never throws. */
+/**
+ * How many more groups may go to Bugsink on the UTC day of `now`: at most
+ * `maxForwardedGroupsPerDay`, the daily and the instant forward together.
+ */
+export async function forwardBudget(now = Date.now()): Promise<number> {
+  const since = `${new Date(now).toISOString().slice(0, 10)}T00:00:00.000Z`;
+  const { rows } = await pool.query<{ sent: string | number }>(
+    `SELECT (SELECT count(*) FROM error_forwards WHERE forwarded_at >= $1)
+          + (SELECT count(*) FROM error_instant_forwards WHERE forwarded_at >= $1) AS sent`,
+    [since],
+  );
+  return Math.max(0, env.maxForwardedGroupsPerDay - Number(rows[0]?.sent ?? 0));
+}
+
+/**
+ * Forward the complete groups not forwarded yet, as many as today's budget
+ * allows; the rest wait for a later run. Never throws.
+ */
 export async function runForward(now = Date.now()): Promise<{ forwarded: number; failed: number }> {
   const result = { forwarded: 0, failed: 0 };
   if (!env.bugsinkTelemetryDsn) return result;
@@ -119,6 +136,11 @@ export async function runForward(now = Date.now()): Promise<{ forwarded: number;
     return result;
   }
   try {
+    const budget = await forwardBudget(now);
+    if (budget === 0) {
+      log.info('forward.daily_limit', { max: env.maxForwardedGroupsPerDay });
+      return result;
+    }
     const groups = await pool.query<ErrorGroup>(
       `SELECT to_char(ec.day, 'YYYY-MM-DD') AS day, ec.fingerprint, ec.version,
               min(ec.name) AS name,
@@ -133,8 +155,8 @@ export async function runForward(now = Date.now()): Promise<{ forwarded: number;
                            WHERE f.day = ec.day AND f.fingerprint = ec.fingerprint AND f.version = ec.version)
         GROUP BY ec.day, ec.fingerprint, ec.version
         ORDER BY ec.day, ec.fingerprint, ec.version
-        LIMIT ${BATCH}`,
-      [lastCompleteDay(now)],
+        LIMIT $2`,
+      [lastCompleteDay(now), Math.min(BATCH, budget)],
     );
     for (const group of groups.rows) {
       let ok = false;

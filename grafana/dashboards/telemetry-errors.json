@@ -78,7 +78,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT (SELECT version FROM error_counts GROUP BY version ORDER BY string_to_array(split_part(split_part(version, '-', 1), '+', 1), '.')::int[] DESC LIMIT 1) AS version"
+          "rawSql": "SELECT (SELECT version FROM error_counts GROUP BY version ORDER BY string_to_array(substring(version FROM '^\\d{1,4}\\.\\d{1,4}\\.\\d{1,4}'), '.')::int[] DESC NULLS LAST LIMIT 1) AS version"
         }
       ]
     },
@@ -126,7 +126,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT name, coalesce(message, '') AS code, fingerprint,\n       count(DISTINCT instance_id) AS instances,\n       count(*) AS instance_days,\n       max(days) AS most_days_in_a_week,\n       (array_agg(frames->0->>'path'))[1] AS top_frame\n     FROM error_counts\n     WHERE version = (SELECT version FROM error_counts GROUP BY version ORDER BY string_to_array(split_part(split_part(version, '-', 1), '+', 1), '.')::int[] DESC LIMIT 1) AND day >= current_date - interval '7 days'\n     GROUP BY name, code, fingerprint\n     ORDER BY instances DESC, instance_days DESC\n     LIMIT 50"
+          "rawSql": "SELECT name, coalesce(message, '') AS code, fingerprint,\n       count(DISTINCT instance_id) AS instances,\n       count(*) AS instance_days,\n       max(days) AS most_days_in_a_week,\n       (array_agg(frames->0->>'path'))[1] AS top_frame\n     FROM error_counts\n     WHERE version = (SELECT version FROM error_counts GROUP BY version ORDER BY string_to_array(substring(version FROM '^\\d{1,4}\\.\\d{1,4}\\.\\d{1,4}'), '.')::int[] DESC NULLS LAST LIMIT 1) AND day >= current_date - interval '7 days'\n     GROUP BY name, code, fingerprint\n     ORDER BY instances DESC, instance_days DESC\n     LIMIT 50"
         }
       ]
     },
@@ -152,7 +152,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH firsts AS (\n       SELECT name, coalesce(message, '') AS code, min(string_to_array(split_part(split_part(version, '-', 1), '+', 1), '.')::int[]) AS first_key\n       FROM error_counts GROUP BY name, code\n     )\n     SELECT ec.version,\n       count(DISTINCT (ec.name, coalesce(ec.message, ''))) FILTER (WHERE string_to_array(split_part(split_part(ec.version, '-', 1), '+', 1), '.')::int[] = f.first_key) AS new_errors,\n       count(DISTINCT ec.fingerprint) AS fingerprints,\n       count(DISTINCT ec.instance_id) AS instances\n     FROM error_counts ec JOIN firsts f ON f.name = ec.name AND f.code = coalesce(ec.message, '')\n     GROUP BY ec.version\n     ORDER BY string_to_array(split_part(split_part(ec.version, '-', 1), '+', 1), '.')::int[] DESC\n     LIMIT 20"
+          "rawSql": "WITH firsts AS (\n       SELECT name, coalesce(message, '') AS code, min(string_to_array(substring(version FROM '^\\d{1,4}\\.\\d{1,4}\\.\\d{1,4}'), '.')::int[]) AS first_key\n       FROM error_counts GROUP BY name, code\n     )\n     SELECT ec.version,\n       count(DISTINCT (ec.name, coalesce(ec.message, ''))) FILTER (WHERE string_to_array(substring(ec.version FROM '^\\d{1,4}\\.\\d{1,4}\\.\\d{1,4}'), '.')::int[] = f.first_key) AS new_errors,\n       count(DISTINCT ec.fingerprint) AS fingerprints,\n       count(DISTINCT ec.instance_id) AS instances\n     FROM error_counts ec JOIN firsts f ON f.name = ec.name AND f.code = coalesce(ec.message, '')\n     GROUP BY ec.version\n     ORDER BY string_to_array(substring(ec.version FROM '^\\d{1,4}\\.\\d{1,4}\\.\\d{1,4}'), '.')::int[] DESC NULLS LAST, ec.version\n     LIMIT 20"
         }
       ]
     },

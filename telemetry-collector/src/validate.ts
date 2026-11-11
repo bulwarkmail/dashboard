@@ -10,7 +10,11 @@
 // https://bulwarkmail.org/docs/legal/privacy/telemetry
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SEMVER_LIKE_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[\w.-]+)?(?:\+[\w.-]+)?$/;
+// A release version: three numbers of at most 4 digits (the panels sort by
+// them as integers), an optional prerelease and build part, 64 characters in
+// all. Released builds send `1.21.1`, `1.21.0-beta.2`, `1.20.0+desktop.<sha>`.
+const VERSION_RE = /^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[\w.-]+)?(?:\+[\w.-]+)?$/;
+const MAX_VERSION_LENGTH = 64;
 const SHORT_TEXT_RE = /^[\w.+-]{1,64}$/;
 
 const PLATFORMS = new Set(['docker', 'bare', 'k8s', 'desktop', 'unknown']);
@@ -95,6 +99,26 @@ function str(value: unknown, re?: RegExp): string | null {
   return value;
 }
 
+function version(value: unknown): string | null {
+  return typeof value === 'string' && value.length <= MAX_VERSION_LENGTH ? str(value, VERSION_RE) : null;
+}
+
+function utcDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * The UTC day a heartbeat counts for: the day it arrives, or the day before
+ * when the instance says it sent it then (sent just before midnight, or a
+ * clock a few hours off). Any other day the instance names is ignored.
+ */
+function heartbeatDay(ts: unknown, now: number): string {
+  const yesterday = utcDay(now - 86_400_000);
+  const sent = typeof ts === 'string' ? Date.parse(ts) : Number.NaN;
+  if (!Number.isNaN(sent) && utcDay(sent) === yesterday) return yesterday;
+  return utcDay(now);
+}
+
 function bool(value: unknown): boolean {
   return value === true;
 }
@@ -114,18 +138,15 @@ function onlyKeys(o: Record<string, unknown>, allowed: Set<string>): boolean {
   return Object.keys(o).every((key) => allowed.has(key));
 }
 
-function v1Fields(o: Record<string, unknown>): Omit<CleanHeartbeat, 'schema'> | null {
+function v1Fields(o: Record<string, unknown>, now: number): Omit<CleanHeartbeat, 'schema'> | null {
   const instance_id = str(o.instance_id, UUID_RE);
   if (!instance_id) return null;
 
   // Only the day is kept (UTC midnight); the time of day is dropped.
-  const sent = typeof o.ts === 'string' && !Number.isNaN(Date.parse(o.ts))
-    ? new Date(o.ts)
-    : new Date();
-  const ts = `${sent.toISOString().slice(0, 10)}T00:00:00.000Z`;
+  const ts = `${heartbeatDay(o.ts, now)}T00:00:00.000Z`;
 
-  const version = str(o.version, SEMVER_LIKE_RE);
-  if (!version) return null;
+  const release = version(o.version);
+  if (!release) return null;
 
   const platform = (typeof o.platform === 'string' && PLATFORMS.has(o.platform))
     ? o.platform
@@ -151,12 +172,12 @@ function v1Fields(o: Record<string, unknown>): Omit<CleanHeartbeat, 'schema'> | 
   return {
     instance_id,
     ts,
-    version,
+    version: release,
     build: str(o.build, SHORT_TEXT_RE),
     platform,
-    node_version: str(o.node_version, SEMVER_LIKE_RE),
+    node_version: version(o.node_version),
     os_family,
-    stalwart_version: str(o.stalwart_version, SEMVER_LIKE_RE),
+    stalwart_version: version(o.stalwart_version),
     features,
     counts: {
       accounts: accBucket,
@@ -187,10 +208,10 @@ function validError(input: unknown): CleanError | null {
   if (!isObject(input) || !onlyKeys(input, ERROR_KEYS)) return null;
   const name = str(input.name, ERROR_NAME_RE);
   const fingerprint = str(input.fingerprint, FINGERPRINT_RE);
-  const version = str(input.version, SEMVER_LIKE_RE);
+  const release = version(input.version);
   const count = typeof input.count === 'string' && COUNT_BUCKETS.has(input.count) && input.count !== '0' ? input.count : null;
   const days = typeof input.days === 'number' && Number.isInteger(input.days) && input.days >= 1 && input.days <= 7 ? input.days : null;
-  if (!name || !fingerprint || !version || !count || !days) return null;
+  if (!name || !fingerprint || !release || !count || !days) return null;
   if (!Array.isArray(input.frames) || input.frames.length > MAX_FRAMES) return null;
   const frames: CleanErrorFrame[] = [];
   for (const raw of input.frames) {
@@ -203,15 +224,15 @@ function validError(input: unknown): CleanError | null {
     message = str(input.message, ERROR_CODE_RE);
     if (!message) return null;
   }
-  return { name, fingerprint, frames, version, count, days, message };
+  return { name, fingerprint, frames, version: release, count, days, message };
 }
 
-function validateV2(o: Record<string, unknown>): CleanHeartbeatV2 | null {
+function validateV2(o: Record<string, unknown>, now: number): CleanHeartbeatV2 | null {
   const allowed = new Set([...V1_KEYS, 'errors']);
   if (!onlyKeys(o, allowed)) return null;
   if (isObject(o.features) && !onlyKeys(o.features, new Set(FEATURE_KEYS))) return null;
   if (isObject(o.counts) && !onlyKeys(o.counts, COUNT_KEYS)) return null;
-  const base = v1Fields(o);
+  const base = v1Fields(o, now);
   if (!base) return null;
   if (!Array.isArray(o.errors) || o.errors.length > MAX_ERRORS) return null;
   const errors: CleanError[] = [];
@@ -249,9 +270,7 @@ export function validateErrorBatch(input: unknown, now = Date.now()): CleanError
   const instance_id = str(input.instance_id, UUID_RE);
   const day = str(input.day, DAY_RE);
   if (!instance_id || !day) return null;
-  const today = new Date(now).toISOString().slice(0, 10);
-  const yesterday = new Date(now - 86_400_000).toISOString().slice(0, 10);
-  if (day !== today && day !== yesterday) return null;
+  if (day !== utcDay(now) && day !== utcDay(now - 86_400_000)) return null;
   if (!Array.isArray(input.errors) || input.errors.length === 0 || input.errors.length > MAX_ERRORS) return null;
   const errors: CleanError[] = [];
   const seen = new Set<string>();
@@ -266,13 +285,14 @@ export function validateErrorBatch(input: unknown, now = Date.now()): CleanError
   return { instance_id: instance_id.toLowerCase(), day, errors };
 }
 
-export function validate(input: unknown): CleanHeartbeat | CleanHeartbeatV2 | null {
+/** A heartbeat (POST /v1/heartbeat), arriving at `now`. */
+export function validate(input: unknown, now = Date.now()): CleanHeartbeat | CleanHeartbeatV2 | null {
   if (!isObject(input)) return null;
   const schema = str(input.schema);
   if (schema === '1') {
-    const base = v1Fields(input);
+    const base = v1Fields(input, now);
     return base ? { schema: '1', ...base } : null;
   }
-  if (schema === '2') return validateV2(input);
+  if (schema === '2') return validateV2(input, now);
   return null;
 }

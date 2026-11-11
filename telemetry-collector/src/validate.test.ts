@@ -9,13 +9,13 @@ const base = {
 };
 
 test('keeps only the day of the heartbeat timestamp', () => {
-  const clean = validate({ ...base, ts: '2026-04-27T17:42:13.456Z' });
+  const clean = validate({ ...base, ts: '2026-04-27T17:42:13.456Z' }, Date.parse('2026-04-27T17:42:14Z'));
   assert.ok(clean);
   assert.equal(clean.ts, '2026-04-27T00:00:00.000Z');
 });
 
 test('rounds a timestamp with an offset to its UTC day', () => {
-  const clean = validate({ ...base, ts: '2026-04-27T23:30:00-02:00' });
+  const clean = validate({ ...base, ts: '2026-04-27T23:30:00-02:00' }, Date.parse('2026-04-28T01:30:01Z'));
   assert.ok(clean);
   assert.equal(clean.ts, '2026-04-28T00:00:00.000Z');
 });

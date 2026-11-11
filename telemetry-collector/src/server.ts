@@ -66,6 +66,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 400, { ok: false });
       }
       if (clean.schema === '1' && bytes > MAX_V1_BODY_BYTES) return send(res, 413, { ok: false });
+      // Answered alike when it was dropped (a new id past the day's limit).
       await storeHeartbeat(clean);
       return send(res, 200, { ok: true });
     }
@@ -106,6 +107,9 @@ async function main(): Promise<void> {
   // apart from the heartbeat path: a failure there never fails a heartbeat.
   void runForward();
   setInterval(() => { void runForward(); }, 60 * 60 * 1000);
+
+  // Ids whose interval is over leave the /v1/errors limiter here, not on a request.
+  setInterval(() => instanceLimiter.prune(), INSTANCE_INTERVAL_MS);
 
   const shutdown = async (sig: string): Promise<void> => {
     log.info('shutting down', { sig });

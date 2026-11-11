@@ -19,6 +19,11 @@ die() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
 
 rand() { openssl rand -hex 32; }
 
+# Credentials for curl go through files in this private folder, never on
+# curl's command line, which every local account can read in the process list.
+CRED_DIR=$(mktemp -d)
+trap 'rm -rf "$CRED_DIR"' EXIT
+
 # Give NAME a fresh secret in .env when it is missing or empty; a value that
 # is set is never changed. Only shell builtins handle the value, so it never
 # shows up in the process list.
@@ -51,16 +56,14 @@ if [ ! -f .env ]; then
   FIRST_RUN=1
   cp .env.example .env
   chmod 600 .env
-  sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(rand)|"                       .env
-  sed -i "s|^POSTGRES_GRAFANA_PASSWORD=.*|POSTGRES_GRAFANA_PASSWORD=$(rand)|"       .env
-  sed -i "s|^POSTGRES_UMAMI_PASSWORD=.*|POSTGRES_UMAMI_PASSWORD=$(rand)|"           .env
-  sed -i "s|^POSTGRES_DASHBOARD_PASSWORD=.*|POSTGRES_DASHBOARD_PASSWORD=$(rand)|"   .env
-  sed -i "s|^POSTGRES_TELEMETRY_PASSWORD=.*|POSTGRES_TELEMETRY_PASSWORD=$(rand)|"   .env
-  sed -i "s|^GRAFANA_ADMIN_PASSWORD=.*|GRAFANA_ADMIN_PASSWORD=$(rand)|"             .env
-  sed -i "s|^UMAMI_APP_SECRET=.*|UMAMI_APP_SECRET=$(rand)|"                         .env
+  for name in POSTGRES_PASSWORD POSTGRES_GRAFANA_PASSWORD POSTGRES_UMAMI_PASSWORD POSTGRES_DASHBOARD_PASSWORD \
+              POSTGRES_TELEMETRY_PASSWORD GRAFANA_ADMIN_PASSWORD UMAMI_APP_SECRET; do
+    ensure_secret "$name"
+  done
 fi
 # Secrets added after the first release: generated in an existing .env too.
-for name in POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD POSTGRES_GRAFANA_UMAMI_RO_PASSWORD POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD; do
+for name in POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD POSTGRES_GRAFANA_UMAMI_RO_PASSWORD POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD \
+            UMAMI_ADMIN_PASSWORD; do
   ensure_secret "$name"
 done
 if [ "$FIRST_RUN" = 1 ]; then
@@ -77,10 +80,14 @@ set -a; . ./.env; set +a
 : "${VERSION_DOMAIN:?set VERSION_DOMAIN in .env}"
 : "${LE_EMAIL:?set LE_EMAIL in .env, used for Lets Encrypt registration}"
 : "${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}"
+: "${GRAFANA_ADMIN_USER:=admin}"
 # GRAFANA_PUBLIC_DASHBOARD_TOKEN is captured below from the Grafana API on
 # first deploy and written back to .env. Default to a stub so envsubst
 # doesn't blank the redirect target before bootstrap finishes.
 : "${GRAFANA_PUBLIC_DASHBOARD_TOKEN:=pending}"
+# Umami's vhost serves only the tracker until step 9a has made sure Umami's
+# default login is gone.
+export UMAMI_APP_OPEN=no
 
 command -v envsubst >/dev/null || die "envsubst not found — install gettext-base"
 
@@ -152,7 +159,7 @@ ensure_cert "$VERSION_DOMAIN"
 
 render_vhost grafana.conf.template        "$GRAFANA_DOMAIN"        GRAFANA_DOMAIN
 render_vhost grafana-public.conf.template "$GRAFANA_PUBLIC_DOMAIN" GRAFANA_PUBLIC_DOMAIN GRAFANA_PUBLIC_DASHBOARD_TOKEN
-render_vhost umami.conf.template          "$UMAMI_DOMAIN"          UMAMI_DOMAIN
+render_vhost umami.conf.template          "$UMAMI_DOMAIN"          UMAMI_DOMAIN UMAMI_APP_OPEN
 render_vhost telemetry.conf.template      "$TELEMETRY_DOMAIN"      TELEMETRY_DOMAIN
 render_vhost version.conf.template        "$VERSION_DOMAIN"        VERSION_DOMAIN
 
@@ -191,6 +198,39 @@ if ! command -v scc >/dev/null 2>&1; then
   rm -rf "$TMP"
 fi
 
+# --- 6b. the collector's own account --------------------------------------
+# The GitHub collector clones and unpacks repositories. It runs as the system
+# account bulwark-collector (uid/gid in collector/ecosystem.config.cjs), which
+# owns the clones in data/repos and nothing else of the stack. It reads .env
+# and the App Store Connect key through their group, which has no other
+# member; other accounts can't read them.
+if ! id -u bulwark-collector >/dev/null 2>&1; then
+  log "Creating the system account bulwark-collector"
+  useradd --system --user-group --home-dir "$APP_DIR/data/repos" --no-create-home \
+    --shell /usr/sbin/nologin bulwark-collector
+fi
+chown -R bulwark-collector:bulwark-collector data/repos
+chmod 700 data/repos
+chgrp bulwark-collector .env
+chmod 640 .env
+chgrp bulwark-collector secrets
+if [ -n "${ASC_KEY_FILE:-}" ]; then
+  # Relative to the collector's folder, where pm2 starts it.
+  case "$ASC_KEY_FILE" in /*) asc_key="$ASC_KEY_FILE" ;; *) asc_key="$APP_DIR/collector/$ASC_KEY_FILE" ;; esac
+  if [ -f "$asc_key" ]; then
+    chgrp bulwark-collector "$asc_key"
+    chmod 640 "$asc_key"
+  fi
+fi
+# pm2 writes the collector's log files; the folder stays root's, as the
+# other services log there too.
+mkdir -p /var/log/bulwark-dashboard
+for f in collector.out.log collector.err.log; do
+  touch "/var/log/bulwark-dashboard/$f"
+  chown bulwark-collector:bulwark-collector "/var/log/bulwark-dashboard/$f"
+  chmod 640 "/var/log/bulwark-dashboard/$f"
+done
+
 # --- 7. collector (pm2) ----------------------------------------------------
 if [ -d "$APP_DIR/collector" ]; then
   log "Building collector"
@@ -199,9 +239,23 @@ if [ -d "$APP_DIR/collector" ]; then
   npm ci --no-audit --no-fund
   npm run build
   popd >/dev/null
+  # pm2 keeps the account a process was started with, also on reload: when
+  # the config names another account than the running process has, the
+  # process is deleted and started once.
+  want_user=$(node -e 'process.stdout.write(String(require(process.argv[1]).apps[0].uid || ""))' "$APP_DIR/collector/ecosystem.config.cjs")
   if pm2 describe bulwark-dashboard-collector >/dev/null 2>&1; then
-    log "Reloading collector"
-    pm2 reload "$APP_DIR/collector/ecosystem.config.cjs" --update-env
+    pid=$(pm2 pid bulwark-dashboard-collector 2>/dev/null || true)
+    running_uid=""
+    if [ -n "$pid" ] && [ "$pid" != 0 ]; then running_uid=$(ps -o uid= -p "$pid" 2>/dev/null | tr -d ' ' || true); fi
+    if [ -n "$want_user" ] && [ "$running_uid" != "$(id -u "$want_user")" ]; then
+      log "Starting the collector anew as $want_user"
+      pm2 delete bulwark-dashboard-collector
+      pm2 start "$APP_DIR/collector/ecosystem.config.cjs"
+      pm2 save
+    else
+      log "Reloading collector"
+      pm2 reload "$APP_DIR/collector/ecosystem.config.cjs" --update-env
+    fi
   else
     log "Starting collector"
     pm2 start "$APP_DIR/collector/ecosystem.config.cjs"
@@ -261,6 +315,54 @@ done
 log "Applying Grafana's read-only database logins"
 docker compose exec -T postgres psql -X -q -U postgres -d postgres < "$APP_DIR/postgres/grafana-read-only.sql"
 
+# --- 9a. Umami: replace the default login ---------------------------------
+# Umami creates the account admin with a well-known password on its first
+# start. Replace it with UMAMI_ADMIN_PASSWORD through Umami's own API; until
+# that is done, or when Umami doesn't answer, the vhost serves only the
+# tracker script and /api/send. A password changed by hand stays as it is.
+UMAMI_BASE="http://127.0.0.1:3007"
+
+# Log in as admin with the password in $1. Prints the session token and
+# returns 0 when logged in, 2 when Umami refused the password, 1 otherwise.
+umami_login() {
+  local status token
+  printf '{"username":"admin","password":"%s"}' "$1" > "$CRED_DIR/umami-login.json"
+  status=$(curl -s -o "$CRED_DIR/umami-login.out" -w '%{http_code}' -H 'content-type: application/json' \
+    --data-binary @"$CRED_DIR/umami-login.json" "$UMAMI_BASE/api/auth/login") || return 1
+  [ "$status" = 401 ] && return 2
+  [ "$status" = 200 ] || return 1
+  token=$(grep -oE '"token":"[^"]+"' "$CRED_DIR/umami-login.out" | head -1 | sed -e 's/^"token":"//' -e 's/"$//') || return 1
+  [ -n "$token" ] || return 1
+  printf '%s' "$token"
+}
+
+secure_umami() {
+  local token rc=0
+  for i in {1..60}; do
+    if curl -sf "$UMAMI_BASE/api/heartbeat" >/dev/null 2>&1; then break; fi
+    sleep 2
+  done
+  umami_login "$UMAMI_ADMIN_PASSWORD" >/dev/null && return 0
+  token=$(umami_login umami) || rc=$?
+  # Umami refuses its default password: it was changed by hand.
+  [ "$rc" = 2 ] && return 0
+  [ "$rc" = 0 ] || return 1
+  log "Replacing Umami's default login with UMAMI_ADMIN_PASSWORD"
+  printf '{"currentPassword":"umami","newPassword":"%s"}' "$UMAMI_ADMIN_PASSWORD" > "$CRED_DIR/umami-password.json"
+  printf 'Authorization: Bearer %s\n' "$token" > "$CRED_DIR/umami-auth"
+  curl -sf -H 'content-type: application/json' -H @"$CRED_DIR/umami-auth" \
+    --data-binary @"$CRED_DIR/umami-password.json" "$UMAMI_BASE/api/me/password" >/dev/null || return 1
+  umami_login "$UMAMI_ADMIN_PASSWORD" >/dev/null
+}
+
+if secure_umami; then
+  UMAMI_APP_OPEN=yes
+  render_vhost umami.conf.template "$UMAMI_DOMAIN" UMAMI_DOMAIN UMAMI_APP_OPEN
+  nginx -t && systemctl reload nginx
+else
+  log "WARN: Umami didn't answer, or its default login couldn't be replaced; $UMAMI_DOMAIN serves only the tracker until the next deploy"
+fi
+
 # --- 9. Bootstrap public-dashboard share token ----------------------------
 # Wait for Grafana to come up, then ensure the "bulwark-public" dashboard
 # has a public share enabled and capture its access token. Writes the token
@@ -269,32 +371,34 @@ docker compose exec -T postgres psql -X -q -U postgres -d postgres < "$APP_DIR/p
 bootstrap_public_share() {
   local uid="bulwark-public"
   local base="http://127.0.0.1:3006"
-  local auth="admin:$GRAFANA_ADMIN_PASSWORD"
+  # The admin's login, for curl --netrc-file.
+  local netrc="$CRED_DIR/grafana.netrc"
+  printf 'machine 127.0.0.1 login %s password %s\n' "$GRAFANA_ADMIN_USER" "$GRAFANA_ADMIN_PASSWORD" > "$netrc"
 
   # Wait for Grafana itself.
   for i in {1..30}; do
-    if curl -sf -u "$auth" "$base/api/health" >/dev/null 2>&1; then break; fi
+    if curl -sf --netrc-file "$netrc" "$base/api/health" >/dev/null 2>&1; then break; fi
     sleep 2
   done
   # Wait for the bulwark-public dashboard to be picked up by the file
   # provisioner (default scan interval is 30s).
   for i in {1..20}; do
-    if curl -sf -u "$auth" "$base/api/dashboards/uid/$uid" >/dev/null 2>&1; then break; fi
+    if curl -sf --netrc-file "$netrc" "$base/api/dashboards/uid/$uid" >/dev/null 2>&1; then break; fi
     sleep 3
   done
-  if ! curl -sf -u "$auth" "$base/api/dashboards/uid/$uid" >/dev/null 2>&1; then
+  if ! curl -sf --netrc-file "$netrc" "$base/api/dashboards/uid/$uid" >/dev/null 2>&1; then
     log "Public dashboard '$uid' not provisioned after 60s — skipping share bootstrap"
     return 0
   fi
 
   local existing token=""
-  existing=$(curl -sf -u "$auth" "$base/api/dashboards/uid/$uid/public-dashboards" 2>/dev/null || true)
+  existing=$(curl -sf --netrc-file "$netrc" "$base/api/dashboards/uid/$uid/public-dashboards" 2>/dev/null || true)
   token=$(printf '%s' "$existing" | grep -oE '"accessToken":"[^"]+"' | head -1 | sed -e 's/.*:"//' -e 's/".*//')
 
   if [ -z "$token" ]; then
     log "Creating public share for dashboard '$uid'"
     local created
-    created=$(curl -sf -u "$auth" -X POST -H "content-type: application/json" \
+    created=$(curl -sf --netrc-file "$netrc" -X POST -H "content-type: application/json" \
       -d '{"isEnabled":true,"annotationsEnabled":false,"timeSelectionEnabled":false}' \
       "$base/api/dashboards/uid/$uid/public-dashboards" || true)
     token=$(printf '%s' "$created" | grep -oE '"accessToken":"[^"]+"' | head -1 | sed -e 's/.*:"//' -e 's/".*//')
@@ -321,5 +425,5 @@ bootstrap_public_share
 log "Done."
 log "Grafana (admin): https://$GRAFANA_DOMAIN  (Grafana login)"
 log "Public stats:    https://$GRAFANA_PUBLIC_DOMAIN  (no auth)"
-log "Umami:           https://$UMAMI_DOMAIN     (first-run admin / umami)"
+log "Umami:           https://$UMAMI_DOMAIN     (login admin, password UMAMI_ADMIN_PASSWORD in .env unless changed by hand)"
 log "Version server:  https://$VERSION_DOMAIN/?v=1.0.0"

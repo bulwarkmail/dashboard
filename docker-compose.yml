@@ -117,6 +117,11 @@ services:
       # New session hash every day (Umami's default is every month), as the
       # website's privacy page promises.
       SALT_ROTATION: day
+      # The visitor's address comes from X-Real-IP, which nginx sets to the
+      # connection's address, and the location from that address: no other
+      # client-IP or CDN location header counts (there is no CDN in front).
+      CLIENT_IP_HEADER: x-real-ip
+      SKIP_LOCATION_HEADERS: "1"
     ports:
       - "127.0.0.1:3007:3000"
 

@@ -93,6 +93,52 @@ test('Prometheus has no lifecycle API', () => {
   assert.doesNotMatch(withoutComments(read('docker-compose.yml')), /--web\.enable-admin-api/);
 });
 
+test('no password is on a command line in deploy.sh, and Umami is not announced with its default login', () => {
+  const deploy = withoutComments(read('deploy.sh'));
+  assert.doesNotMatch(deploy, /curl[^\n]*\s(-u|--user)\s/, 'curl gets the Grafana admin password as an argument');
+  assert.doesNotMatch(deploy, /admin\s*\/\s*umami/, 'the deploy leaves Umami on its default login');
+  for (const file of ['nginx/umami.conf.template', 'nginx/grafana.conf.template', 'nginx/grafana-public.conf.template']) {
+    assert.doesNotMatch(withoutComments(read(file)), /\$proxy_add_x_forwarded_for/, `${file} passes on an X-Forwarded-For the visitor wrote`);
+  }
+  // Generated secrets reach .env through shell builtins, not through sed's or curl's arguments.
+  assert.doesNotMatch(deploy, /sed[^\n]*\$\(rand\)/, 'a generated secret is on sed\'s command line');
+  assert.match(deploy, /--netrc-file/);
+  assert.doesNotMatch(deploy, /curl[^\n]*(PASSWORD|\$token)/, 'curl gets a secret as an argument');
+});
+
+test('Umami\'s app stays closed until deploy.sh has replaced its default login', () => {
+  const vhost = withoutComments(read('nginx/umami.conf.template'));
+  // The tracker always works.
+  for (const route of ['/script.js', '/api/send']) assert.match(vhost, new RegExp(`location\\s+=\\s+${route.replace(/[./]/g, '\\$&')}\\s*\\{[^}]*proxy_pass`));
+  // Everything else answers 404 unless rendered with UMAMI_APP_OPEN=yes.
+  // The HTTPS server's catch-all, after the port 80 redirect's.
+  const app = vhost.slice(vhost.lastIndexOf('location / {'));
+  assert.match(vhost, /set\s+\$umami_app_open\s+"\$\{UMAMI_APP_OPEN\}"\s*;/);
+  assert.match(app, /^location \/ \{\s*if \(\$umami_app_open != "yes"\) \{\s*return 404;/);
+  const deploy = withoutComments(read('deploy.sh'));
+  assert.match(deploy, /export UMAMI_APP_OPEN=no/);
+  assert.match(deploy, /render_vhost umami\.conf\.template\s+"\$UMAMI_DOMAIN"\s+UMAMI_DOMAIN UMAMI_APP_OPEN/);
+  // Opened only after the login was checked or replaced through Umami's API.
+  const opened = deploy.indexOf('UMAMI_APP_OPEN=yes');
+  assert.ok(opened > deploy.indexOf('if secure_umami; then'), 'the vhost opens before the login is checked');
+  assert.match(deploy, /\/api\/me\/password/);
+  // And Umami takes the visitor's address only from the header nginx sets.
+  assert.match(withoutComments(read('docker-compose.yml')), /CLIENT_IP_HEADER:\s*x-real-ip/);
+});
+
+test('the collector runs as its own account, which owns the clones and reads only its files', () => {
+  const deploy = withoutComments(read('deploy.sh'));
+  assert.match(deploy, /useradd --system[^\n]*\\?\n?[^\n]*bulwark-collector/);
+  assert.match(deploy, /chown -R bulwark-collector:bulwark-collector data\/repos/);
+  // .env and the App Store Connect key: readable through the account's group, by nobody else.
+  assert.match(deploy, /chgrp bulwark-collector \.env\s*\n\s*chmod 640 \.env/);
+  assert.match(deploy, /chgrp bulwark-collector "\$asc_key"\s*\n\s*chmod 640 "\$asc_key"/);
+  // A running collector started as another account is started anew, not reloaded.
+  assert.match(deploy, /pm2 delete bulwark-dashboard-collector/);
+  // All of it before the collector starts.
+  assert.ok(deploy.indexOf('useradd --system') < deploy.indexOf('pm2 start "$APP_DIR/collector/ecosystem.config.cjs"'));
+});
+
 test('signing in through the identity provider does not make everyone a Viewer', () => {
   const compose = withoutComments(read('docker-compose.yml'));
   const path = /GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH:\s*"([^"]*)"/.exec(compose)?.[1] ?? '';

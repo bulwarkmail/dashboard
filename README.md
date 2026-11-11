@@ -7,8 +7,8 @@ Internal observability stack for the Bulwark org: Grafana + Prometheus + Postgre
 - **Grafana** - dashboards, host port `3006`. The admin vhost has no nginx basic auth; Grafana's own login is the gate: the local admin account, or authentik with the `grafana-admin` role (Admin) or `grafana-viewer` role (Viewer). Anyone authentik lets through without one of those roles is refused. Its Postgres data sources log in with read-only roles, see below.
 - **Prometheus** - scrapes `/metrics` from `relay`, `stalwart`, and the host. Internal docker network only. The relay wants its metrics token: put it in `secrets/relay-metrics-token` (one line, no newline needed); `deploy.sh` makes the file readable by Prometheus only.
 - **Postgres 16** - backing store for Grafana, Umami, and the GitHub collector. Bound to `127.0.0.1:5432`.
-- **Umami** - privacy-friendly web analytics. Public vhost; tracking script reachable from end-user browsers.
-- **collector** (pm2) - periodically pulls per-repo GitHub stats (stars, issues, traffic, releases) and computes commits + LOC by cloning into `data/repos/`. Writes to the `dashboard` Postgres DB.
+- **Umami** - privacy-friendly web analytics. Public vhost; tracking script reachable from end-user browsers. On each deploy, `deploy.sh` replaces Umami's default admin login with `UMAMI_ADMIN_PASSWORD` from `.env` through Umami's API (a password changed by hand stays); until that worked, the vhost serves only `/script.js` and `/api/send`. Umami takes the visitor's address from `X-Real-IP`, which nginx sets.
+- **collector** (pm2) - periodically pulls per-repo GitHub stats (stars, issues, traffic, releases) and computes commits + LOC by cloning into `data/repos/`. Writes to the `dashboard` Postgres DB. Runs as the system account `bulwark-collector`, which `deploy.sh` creates; it owns `data/repos` and reads `.env` and the App Store Connect key through its group.
 - **telemetry-collector** (pm2) - receives anonymous heartbeats from self-hosted instances, rolls them up, writes to the `telemetry` Postgres DB. Schema 2 heartbeats add error counts (`error_counts`, 90 days); with `BUGSINK_TELEMETRY_DSN` set, complete days are forwarded to Bugsink, one event per fingerprint, version and day, without instance ids. Instances in instant mode also post the current day's changed counts to `POST /v1/errors` (once per 30 s per instance); the first report of each error per day goes to Bugsink at once (`error_instant_forwards`, at most 30 a minute). At most 100 error groups a day go to Bugsink in all (`TELEMETRY_MAX_FORWARDED_GROUPS_PER_DAY`); the rest wait for the next day. A heartbeat counts for the UTC day it arrives, or the day before when it says it was sent then. Versions are `N.N.N` with at most 4 digits per number and 64 characters in all. Of the instance ids the collector hasn't seen before, at most 500 a day are stored (`TELEMETRY_MAX_NEW_INSTANCES_PER_DAY`, counted in `new_instance_counts`); past that a new id gets 200 and is dropped, with one warning a day in the log. nginx lets each address post 6 times a minute (burst 10) and keeps the addresses in memory only.
 
 ## Layout on the server
@@ -89,7 +89,7 @@ Added 2026-10-19. The collector feeds three download sources into the `dashboard
   webmail, webmail-lite, webmail-beta, webmail-lite-beta, legacy-proxy.
 - **TestFlight installs** - `testflight_builds` / `testflight_build_snapshots` from the App
   Store Connect `betaBuildUsages` metrics (`collector/src/testflight.ts`). Enabled only when
-  `ASC_KEY_FILE` (the `.p8` key, in `secrets/`, mode 600), `ASC_KEY_ID` and `ASC_ISSUER_ID`
+  `ASC_KEY_FILE` (the `.p8` key, in `secrets/`; `deploy.sh` makes it readable by the collector's group only), `ASC_KEY_ID` and `ASC_ISSUER_ID`
   are set in `.env` and the key file exists; otherwise it is skipped silently. Restart the
   collector after placing the key.
 

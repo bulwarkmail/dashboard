@@ -42,13 +42,18 @@ const GHSA_ID = /^GHSA(-[0-9a-z]{4}){3}$/;
 const FILE_KEYS: ReadonlySet<string> = new Set(['_doc', 'minimumSupported', 'severities']);
 const ENTRY_KEYS: ReadonlySet<string> = new Set(['severity', 'advisory']);
 
-type OverridesProblem = 'missing' | 'unreadable' | 'invalid';
+// Why the answers don't come from overrides.json's current content: the file is missing, can't be
+// read or is invalid, or it is valid but the registry has not been rebuilt with it, because GitHub's
+// release list could not be fetched since.
+type OverridesProblem = 'missing' | 'unreadable' | 'invalid' | 'releases-unavailable';
 
 let current: Registry = empty();
 // The last overrides that were valid; null until the first file was read.
 let overrides: Overrides | null = null;
-// Why the overrides in use are not the file's current content; null when they are.
-let overridesProblem: OverridesProblem | null = null;
+// What reading the file found last; null when it was valid.
+let fileProblem: Exclude<OverridesProblem, 'releases-unavailable'> | null = null;
+// The overrides `current` was built with.
+let builtWith: Overrides | null = null;
 
 function empty(): Registry {
   return {
@@ -64,15 +69,56 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * The first key named twice in one object of a JSON text (JSON.parse keeps only the last), or null.
+ * `text` must be valid JSON.
+ */
+function keyNamedTwice(text: string): string | null {
+  // One entry per open object (its keys) or array (null).
+  const open: Array<Set<string> | null> = [];
+  let keyNext = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      let j = i + 1;
+      while (text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      const keys = open[open.length - 1];
+      if (keys && keyNext) {
+        const key = JSON.parse(text.slice(i, j + 1)) as string;
+        if (keys.has(key)) return key;
+        keys.add(key);
+        keyNext = false;
+      }
+      i = j;
+    } else if (c === '{') {
+      open.push(new Set());
+      keyNext = true;
+    } else if (c === '[') {
+      open.push(null);
+      keyNext = false;
+    } else if (c === '}' || c === ']') {
+      open.pop();
+      keyNext = false;
+    } else if (c === ',') {
+      keyNext = open[open.length - 1] != null;
+    } else if (c === ':') {
+      keyNext = false;
+    }
+  }
+  return null;
+}
+
+/**
  * Turns the text of overrides.json into overrides. Throws with the reason when the text is no JSON
- * object, it holds a key other than `_doc`, `minimumSupported` and `severities`, `minimumSupported`
- * is no version, or an entry is malformed: its key is no version, it holds a key other than
- * `severity` and `advisory`, its severity is not one of normal, security, deprecated, or its
- * advisory no comma-separated list of GHSA ids.
+ * object, names a key twice in one object, holds a key other than `_doc`, `minimumSupported` and
+ * `severities`, `minimumSupported` is no version, or an entry is malformed: its key is no version,
+ * it holds a key other than `severity` and `advisory`, its severity is not one of normal, security,
+ * deprecated, or its advisory no comma-separated list of GHSA ids.
  */
 export function parseOverrides(text: string): Overrides {
   const parsed: unknown = JSON.parse(text);
   if (!isObject(parsed)) throw new Error('the file holds no JSON object');
+  const twice = keyNamedTwice(text);
+  if (twice !== null) throw new Error(`key named twice: ${JSON.stringify(twice).slice(0, 40)}`);
   const unknownKey = Object.keys(parsed).find((key) => !FILE_KEYS.has(key));
   if (unknownKey !== undefined) throw new Error(`unknown key ${JSON.stringify(unknownKey).slice(0, 40)}`);
   const { minimumSupported, severities } = parsed;
@@ -138,7 +184,9 @@ function readOverridesFile(): string | null {
 }
 
 /** The overrides to use, and why they are not the file's current content (null when they are). */
-function loadOverrides(read: () => string | null, previous: Overrides | null): { used: Overrides; problem: OverridesProblem | null } {
+function loadOverrides(read: () => string | null, previous: Overrides | null): {
+  used: Overrides; problem: Exclude<OverridesProblem, 'releases-unavailable'> | null;
+} {
   let text: string | null;
   try {
     text = read();
@@ -189,7 +237,7 @@ export async function refresh(sources: RefreshSources = {}): Promise<void> {
   // Read before GitHub is asked, so a broken file stops the start even when GitHub is down.
   const { used, problem } = loadOverrides(overridesText, overrides);
   overrides = used;
-  overridesProblem = problem;
+  fileProblem = problem;
   const sevMap = used.severities;
 
   let releases: GithubRelease[];
@@ -254,6 +302,7 @@ export async function refresh(sources: RefreshSources = {}): Promise<void> {
     minimumSupported,
     entries,
   };
+  builtWith = used;
 
   log.info('registry.refreshed', {
     versions: entries.size,
@@ -395,20 +444,22 @@ export function lookup(currentRaw: string): LookupResult {
 }
 
 /**
- * What /health shows. `overridesStale` is true while the overrides in use are not overrides.json's
- * current content, and `overridesProblem` says why (missing, unreadable, invalid); the details are
- * in the log, never the file's content.
+ * What /health shows. `overridesStale` is true while the answers don't come from overrides.json's
+ * current content, and `overridesProblem` says why: the file is missing, unreadable or invalid, or
+ * it is valid but GitHub's release list could not be fetched since (`releases-unavailable`). The
+ * details are in the log, never the file's content.
  */
 export function snapshot(): {
   fetchedAt: string; latest: string | null; minimumSupported: string | null; count: number;
   overridesStale: boolean; overridesProblem: OverridesProblem | null;
 } {
+  const problem: OverridesProblem | null = fileProblem ?? (builtWith !== overrides ? 'releases-unavailable' : null);
   return {
     fetchedAt: current.fetchedAt,
     latest: current.latest,
     minimumSupported: current.minimumSupported,
     count: current.entries.size,
-    overridesStale: overridesProblem !== null,
-    overridesProblem,
+    overridesStale: problem !== null,
+    overridesProblem: problem,
   };
 }

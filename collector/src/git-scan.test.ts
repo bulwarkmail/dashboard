@@ -63,6 +63,9 @@ function makeRemote(name: string, branch: string, addFiles?: (src: string) => vo
 before(() => {
   makeRemote('clean', 'main');
   makeRemote('slashed', 'release/1.x-next');
+  makeRemote('legacy', 'main');
+  makeRemote('private', 'main');
+  makeRemote('anon', 'main');
   makeRemote('dashed', 'x-y');
   SHELL_BRANCHES.forEach((branch, i) => makeRemote(`hostile${i}`, branch));
   // A tree with symlinks to a file and a folder outside it.
@@ -82,7 +85,7 @@ after(() => {
 
 const { pool } = await import('./db.js');
 const { log } = await import('./log.js');
-const { runGitScan } = await import('./git.js');
+const { gitEnv, runGitScan } = await import('./git.js');
 
 interface Seen { sql: string; params: unknown[] }
 interface Repo { name: string; branch: string; id?: string; owner?: string }
@@ -124,6 +127,100 @@ async function scan(t: import('node:test').TestContext, repos: Repo[]): Promise<
   await runGitScan();
   return { calls, log: lines, run: calls.find((c) => c.sql.startsWith('UPDATE collector_runs')) };
 }
+
+function filesUnder(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.join(entry.parentPath ?? (entry as any).path, entry.name));
+}
+
+const BASIC = Buffer.from(`x-access-token:${TOKEN}`).toString('base64');
+
+test('a clone that fails leaves the token out of the run record and the log', async (t) => {
+  const { run, log } = await scan(t, [{ name: 'missing', branch: 'main' }]);
+  assert.ok(run, 'the run was recorded');
+  assert.equal(bound(run, 'repos_err'), 1, 'the clone failed, as arranged');
+  assert.ok(!JSON.stringify(run.params).includes(TOKEN), `collector_runs.error holds the GitHub token: ${String(bound(run, 'error')).replace(TOKEN, '<token>').slice(0, 160)}`);
+  assert.ok(!log.includes(TOKEN), 'the log holds the GitHub token');
+  // Not in another form either.
+  assert.ok(!JSON.stringify(run.params).includes(BASIC) && !log.includes(BASIC), 'the credential is there base64 encoded');
+});
+
+test('a clone keeps the token out of every file of the repository on disk', async (t) => {
+  const { run } = await scan(t, [{ name: 'clean', branch: 'main' }]);
+  assert.equal(bound(run, 'repos_ok'), 1, 'the scan of the clean repository worked');
+  const files = filesUnder(path.join(reposDir, 'acme', 'clean'));
+  assert.ok(files.length > 0);
+  for (const file of files) {
+    assert.ok(!fs.readFileSync(file, 'latin1').includes(TOKEN), `${path.basename(file)} of the bare clone holds the GitHub token`);
+  }
+});
+
+test('a clone made by an earlier version loses the token from its remote URL at the next scan', async (t) => {
+  const dir = path.join(reposDir, 'acme', 'legacy');
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  execFileSync('git', ['clone', '-q', '--bare', path.join(remote, 'acme', 'legacy.git'), dir], { stdio: 'pipe' });
+  execFileSync('git', ['--git-dir', dir, 'config', 'remote.origin.url', `https://x-access-token:${TOKEN}@github.com/acme/legacy.git`], { stdio: 'pipe' });
+  const { run } = await scan(t, [{ name: 'legacy', branch: 'main' }]);
+  assert.equal(bound(run, 'repos_ok'), 1, 'the scan of the existing clone worked');
+  assert.ok(!fs.readFileSync(path.join(dir, 'config'), 'utf8').includes(TOKEN), 'the old clone still has the token in its config');
+});
+
+test('a fetch that fails on an existing clone stores the repository and git\'s message line, without the token', async (t) => {
+  // An existing clone whose repository is gone, with the credential in its remote URL.
+  const dir = path.join(reposDir, 'acme', 'gone');
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  execFileSync('git', ['init', '-q', '--bare', dir], { stdio: 'pipe' });
+  execFileSync('git', ['--git-dir', dir, 'remote', 'add', 'origin', `https://x-access-token:${TOKEN}@github.com/acme/gone.git`], { stdio: 'pipe' });
+  const { run, log } = await scan(t, [{ name: 'gone', branch: 'main' }]);
+  assert.equal(bound(run, 'repos_err'), 1, 'the fetch failed, as arranged');
+  for (const text of [JSON.stringify(run?.params), log]) {
+    assert.ok(!text.includes(TOKEN) && !text.includes(BASIC), 'the token is in the run record or the log');
+  }
+  const error = String(bound(run, 'error'));
+  assert.match(error, /^acme\/gone: git fetch failed: /);
+  assert.ok(!error.includes('\n') && error.length < 400, `more than one line of git's output was stored: ${JSON.stringify(error.slice(0, 200))}`);
+});
+
+test('a new clone can be read by the collector\'s own account only', { skip: process.platform === 'win32' }, async (t) => {
+  const dir = path.join(reposDir, 'acme', 'private');
+  const { run } = await scan(t, [{ name: 'private', branch: 'main' }]);
+  assert.equal(bound(run, 'repos_ok'), 1);
+  const entries = [dir, ...fs.readdirSync(dir, { recursive: true }).map((p) => path.join(dir, String(p)))];
+  for (const entry of entries) {
+    const mode = fs.lstatSync(entry).mode & 0o777;
+    assert.equal(mode & 0o077, 0, `${path.relative(reposDir, entry)} has mode ${mode.toString(8)}`);
+  }
+});
+
+test('git gets the token as a header for github.com only, after the config entries it already has', () => {
+  const token = 'ghp_FAKE+token/with=chars0000';
+  const parent: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'user.name', GIT_CONFIG_VALUE_0: 'kept' };
+  const config = (childEnv: NodeJS.ProcessEnv, ...args: string[]) =>
+    execFileSync('git', ['config', ...args], { env: childEnv, encoding: 'utf8', stdio: 'pipe' }).trim();
+  const withToken = gitEnv(token, parent);
+  assert.equal(
+    config(withToken, '--get-urlmatch', 'http.extraheader', 'https://github.com/acme/clean.git'),
+    `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`,
+  );
+  assert.equal(config(withToken, '--get', 'user.name'), 'kept', 'the config entry from the parent environment was replaced');
+  assert.throws(() => config(withToken, '--get-urlmatch', 'http.extraheader', 'https://example.org/acme/clean.git'), 'the header is sent to other hosts');
+  assert.equal(withToken.GIT_CONFIG_GLOBAL, parent.GIT_CONFIG_GLOBAL, 'the parent environment was not passed on');
+  // No token: nothing is added, public repositories clone without a header.
+  const anonymous = gitEnv('', parent);
+  assert.equal(anonymous.GIT_CONFIG_COUNT, '1');
+  assert.ok(!Object.values(anonymous).some((v) => v?.includes('Authorization')), 'a header was added without a token');
+});
+
+test('without a token a public repository is still cloned, with no credential at all', async (t) => {
+  const { env } = await import('./env.js');
+  t.after(() => { env.githubToken = TOKEN; });
+  env.githubToken = '';
+  const { run } = await scan(t, [{ name: 'anon', branch: 'main' }]);
+  assert.equal(bound(run, 'repos_ok'), 1, 'the public repository was not cloned without a token');
+  assert.ok(!fs.readFileSync(path.join(reposDir, 'acme', 'anon', 'config'), 'utf8').includes('x-access-token'));
+});
 
 for (const [i, branch] of SHELL_BRANCHES.entries()) {
   test(`a default branch named ${JSON.stringify(branch)} runs nothing`, async (t) => {

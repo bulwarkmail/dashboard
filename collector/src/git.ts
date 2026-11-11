@@ -7,13 +7,52 @@ import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import { pool } from './db.js';
 import { env } from './env.js';
-import { log } from './log.js';
+import { errorText, log } from './log.js';
 
 // Every program is started with an argument list, never through a shell: repository ids, owners,
 // names and branch names come from GitHub and from the repos table.
 const exec = promisify(execFile);
 
 interface RepoRow { id: string; owner: string; name: string; }
+
+function basicCredential(token: string): string {
+  return Buffer.from(`x-access-token:${token}`).toString('base64');
+}
+
+/**
+ * The environment for git: the parent's, plus the GitHub token as an
+ * `http.https://github.com/.extraheader` entry added after the parent's own GIT_CONFIG_COUNT
+ * entries. The token is never part of a URL or an argument, so git neither stores nor prints it.
+ * Without a token nothing is added and public repositories are cloned anonymously.
+ */
+export function gitEnv(token: string, parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...parent, GIT_TERMINAL_PROMPT: '0' };
+  if (!token) return out;
+  const count = Number(parent.GIT_CONFIG_COUNT || 0);
+  const n = Number.isSafeInteger(count) && count > 0 ? count : 0;
+  out[`GIT_CONFIG_KEY_${n}`] = 'http.https://github.com/.extraheader';
+  out[`GIT_CONFIG_VALUE_${n}`] = `Authorization: Basic ${basicCredential(token)}`;
+  out.GIT_CONFIG_COUNT = String(n + 1);
+  return out;
+}
+
+/** The token in the forms git could print it in, for errorText(). */
+function tokenForms(): string[] {
+  return env.githubToken ? [env.githubToken, basicCredential(env.githubToken)] : [];
+}
+
+/** Runs git. A failure carries git's own message line, not the command line. */
+async function git(args: string[], what: string, maxBuffer = 256 * 1024 * 1024): Promise<string> {
+  try {
+    const { stdout } = await exec('git', args, { env: gitEnv(env.githubToken), maxBuffer });
+    return stdout;
+  } catch (e) {
+    const { stderr, code, signal } = e as { stderr?: unknown; code?: unknown; signal?: unknown };
+    const reason = failureLine(typeof stderr === 'string' ? stderr : '')
+      || (signal ? `stopped by ${String(signal)}` : typeof code === 'number' ? `exit code ${code}` : String(code ?? 'not started'));
+    throw new Error(`git ${what} failed: ${reason}`);
+  }
+}
 
 // Owner and repository names as GitHub allows them.
 const GITHUB_NAME = /^[A-Za-z0-9._-]+$/;
@@ -48,7 +87,7 @@ async function branchRef(branch: unknown): Promise<string> {
   if (typeof branch !== 'string' || branch === '' || branch.startsWith('-') || branch === 'HEAD') throw refused;
   const ref = `refs/heads/${branch}`;
   try {
-    await exec('git', ['check-ref-format', ref]);
+    await git(['check-ref-format', ref], 'check-ref-format');
   } catch {
     throw refused;
   }
@@ -58,20 +97,20 @@ async function branchRef(branch: unknown): Promise<string> {
 async function ensureClone(dir: string, owner: string, name: string): Promise<void> {
   let exists = false;
   try { await fs.stat(path.join(dir, 'objects')); exists = true; } catch { /* not yet */ }
-  const url = `https://x-access-token:${env.githubToken}@github.com/${owner}/${name}.git`;
+  const url = `https://github.com/${owner}/${name}.git`;
   if (!exists) {
-    await fs.mkdir(dir, { recursive: true });
-    await exec('git', ['clone', '--bare', '--filter=blob:none', '--', url, dir], { maxBuffer: 64 * 1024 * 1024 });
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    await git(['clone', '--bare', '--filter=blob:none', '--', url, dir], 'clone', 64 * 1024 * 1024);
   } else {
-    await exec('git', ['--git-dir', dir, 'fetch', '--prune', 'origin', '+refs/heads/*:refs/heads/*'], {
-      maxBuffer: 64 * 1024 * 1024,
-    });
+    // The plain URL is written before every fetch, so a clone whose remote URL holds a credential
+    // loses it before git reads it.
+    await git(['--git-dir', dir, 'config', '--replace-all', 'remote.origin.url', url], 'config');
+    await git(['--git-dir', dir, 'fetch', '--prune', 'origin', '+refs/heads/*:refs/heads/*'], 'fetch', 64 * 1024 * 1024);
   }
 }
 
 async function gitOut(gitDir: string, args: string[]): Promise<string> {
-  const { stdout } = await exec('git', ['--git-dir', gitDir, ...args], { maxBuffer: 256 * 1024 * 1024 });
-  return stdout;
+  return git(['--git-dir', gitDir, ...args], args[0]);
 }
 
 // `ref` is a full ref name from branchRef(), always after --end-of-options.
@@ -93,9 +132,11 @@ async function commitStats(gitDir: string, ref: string): Promise<{
   return { total, last30d, authors30d, head };
 }
 
-function lastLine(text: string): string {
+/** The line of a program's stderr that says what failed: git's fatal or error line, otherwise the last line. */
+function failureLine(text: string): string {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-  return (lines[lines.length - 1] ?? '').slice(0, 300);
+  const line = lines.find((l) => l.startsWith('fatal:')) ?? lines.find((l) => l.startsWith('error:')) ?? lines.at(-1) ?? '';
+  return line.slice(0, 300);
 }
 
 /** Resolves when the child exits with 0; a failure carries the last line it wrote to stderr. */
@@ -107,14 +148,18 @@ function finished(child: ChildProcess, what: string): Promise<void> {
     child.once('error', reject);
     child.once('close', (code, signal) => {
       if (code === 0) resolve();
-      else reject(new Error(`${what} failed: ${lastLine(stderr) || (signal ? `stopped by ${signal}` : `exit code ${code}`)}`));
+      else reject(new Error(`${what} failed: ${failureLine(stderr) || (signal ? `stopped by ${signal}` : `exit code ${code}`)}`));
     });
   });
 }
 
-/** Unpacks `ref` of a bare repository into `dest`: git archive piped into tar by this process. */
+/**
+ * Unpacks `ref` of a bare repository into `dest`: git archive piped into tar by this process. The
+ * clones are partial, so git archive fetches file contents from GitHub and gets the token too.
+ */
 async function unpack(gitDir: string, ref: string, dest: string): Promise<void> {
   const archive = spawn('git', ['--git-dir', gitDir, 'archive', '--format=tar', '--end-of-options', ref], {
+    env: gitEnv(env.githubToken),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const tar = spawn('tar', ['-x', '-C', dest], { stdio: ['pipe', 'ignore', 'pipe'] });
@@ -200,6 +245,9 @@ async function locByLanguage(gitDir: string, ref: string): Promise<Array<{
 }
 
 export async function runGitScan(): Promise<void> {
+  // Clones hold the content of private repositories: what the scan and git create on disk is
+  // readable by this account only (folders 0700, files 0600).
+  process.umask(0o077);
   const runId = (await pool.query(
     `INSERT INTO collector_runs (job) VALUES ('git') RETURNING id`,
   )).rows[0].id as number;
@@ -237,13 +285,13 @@ export async function runGitScan(): Promise<void> {
         ok++;
       } catch (e) {
         err++;
-        const msg = e instanceof Error ? e.message : String(e);
-        if (!firstError) firstError = `${r.id}: ${msg}`;
+        const msg = errorText(e, tokenForms());
+        if (!firstError) firstError = `${String(r.id).slice(0, 200)}: ${msg}`;
         log.warn('git.repo_failed', { repo: r.id, err: msg });
       }
     }
   } catch (e) {
-    firstError = e instanceof Error ? e.message : String(e);
+    firstError = errorText(e, tokenForms());
     log.error('git.aborted', { err: firstError });
   } finally {
     await pool.query(

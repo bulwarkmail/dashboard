@@ -24,10 +24,17 @@ const STOP_GRACE_MS = 5000;
 // (git's transport helpers, for example).
 const OWN_GROUP = process.platform !== 'win32';
 
-/** Stops a child and its process group: SIGTERM, then SIGKILL if it is still running after the grace time. */
+const stopping = new WeakSet<ChildProcess>();
+
+/**
+ * Stops a child and its process group: SIGTERM, then SIGKILL if it is still running after the grace
+ * time. Once the program itself has exited, whatever is left in its group (a helper that ignores
+ * SIGTERM and may hold the program's output open) is killed at once.
+ */
 function stop(child: ChildProcess): void {
   const pid = child.pid;
-  if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  if (pid === undefined || child.exitCode !== null || child.signalCode !== null || stopping.has(child)) return;
+  stopping.add(child);
   const send = (sig: NodeJS.Signals) => {
     try {
       if (OWN_GROUP) process.kill(-pid, sig);
@@ -37,7 +44,10 @@ function stop(child: ChildProcess): void {
   send('SIGTERM');
   const timer = setTimeout(() => send('SIGKILL'), STOP_GRACE_MS);
   timer.unref();
-  child.once('exit', () => clearTimeout(timer));
+  child.once('exit', () => {
+    clearTimeout(timer);
+    send('SIGKILL');
+  });
 }
 
 /** Stops the child when `signal` is aborted (the repository's deadline has passed). */

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  cleanup, killAll, makeRemote, reposDir, row, running, scan, shim, tempFolders, tmp, unshim, work,
+  cleanup, killAll, makeRemote, reposDir, row, running, scan, shim, sleep, startScan, tempFolders, tmp, unshim, work,
 } from './scan-process.js';
 
 const LIMIT = { COLLECTOR_SCAN_DEADLINE_MS: '2000' };
@@ -76,6 +76,34 @@ test('a clone that ignores SIGTERM is killed after the grace time; the scan proc
   assert.ok(result.ms < 2 * SOON, `the scan took ${result.ms} ms`);
   assert.deepEqual(running('31415'), [], 'the program is still running');
   assert.deepEqual(tempFolders(), []);
+});
+
+test('a helper that ignores SIGTERM and holds its program\'s output is killed too, and the scan ends soon after the limit', async () => {
+  fs.rmSync(reposDir, { recursive: true, force: true });
+  // git itself ends on SIGTERM; what it started does not, and has git's stdout and stderr open.
+  shim('git', ON('*" clone "*hangs*', '(trap "" TERM; exec sleep 27182) & wait; exit 1'));
+  const started = startScan([row('hangs')], LIMIT);
+  const result = await Promise.race([started.done, sleep(SOON).then(() => null)]);
+  const left = running('27182');
+  // Let the scan end so the file can go on.
+  killAll('27182');
+  const late = result ?? await started.done;
+  unshim('git');
+  assert.deepEqual(left, [], `${SOON} ms after the start the helper is still running`);
+  assert.ok(result, `the scan had not ended ${SOON} ms after its start (it ended once the helper was killed by the test: ${late.failed[0]?.err})`);
+  assert.equal(late.failed[0]?.err, STOPPED);
+});
+
+test('a helper that ignores SIGTERM and has let go of the output does not stay behind', async () => {
+  fs.rmSync(reposDir, { recursive: true, force: true });
+  shim('git', ON('*" clone "*hangs*', '(trap "" TERM; exec sleep 16180 </dev/null >/dev/null 2>&1) & wait; exit 1'));
+  const result = await scan([row('hangs')], LIMIT);
+  unshim('git');
+  await sleep(6000);
+  const left = running('16180');
+  killAll('16180');
+  assert.equal(result.failed[0]?.err, STOPPED);
+  assert.deepEqual(left, [], 'the scan is over and what git started is still running');
 });
 
 test('an archive that arrives slowly is stopped at the limit: git, what it started, and tar are gone, the temp folder too', async () => {

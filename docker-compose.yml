@@ -35,7 +35,8 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=90d
-      - --web.enable-lifecycle
+    # No --web.enable-lifecycle: every container on the shared bulwark network
+    # reaches Prometheus, and a config change is a container restart anyway.
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       # The relay's metrics token (deploy.sh makes the file if it is missing).

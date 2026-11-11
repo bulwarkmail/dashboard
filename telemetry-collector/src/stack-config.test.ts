@@ -64,6 +64,11 @@ test('Grafana\'s own metrics are not served without a login', () => {
   assert.ok(off && blocked, 'only one of the two layers is in place');
 });
 
+test('Prometheus has no lifecycle API', () => {
+  assert.doesNotMatch(withoutComments(read('docker-compose.yml')), /--web\.enable-lifecycle/);
+  assert.doesNotMatch(withoutComments(read('docker-compose.yml')), /--web\.enable-admin-api/);
+});
+
 test('signing in through the identity provider does not make everyone a Viewer', () => {
   const compose = withoutComments(read('docker-compose.yml'));
   const path = /GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH:\s*"([^"]*)"/.exec(compose)?.[1] ?? '';

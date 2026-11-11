@@ -67,6 +67,8 @@ services:
       GF_DATABASE_SSL_MODE: disable
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Grafana's own /metrics answers without a login; nothing scrapes it.
+      GF_METRICS_ENABLED: "false"
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_INSTALL_PLUGINS: frser-sqlite-datasource
       # --- authentik SSO (identitaet.rathblume.de, app bulwark-grafana), 2026-09-03. Local admin login stays as break-glass. ---

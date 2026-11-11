@@ -31,6 +31,12 @@ server {
     # Internal admin Grafana — sits behind Grafana's own login. Public,
     # un-authenticated dashboards live on a separate vhost.
 
+    # Grafana's own metrics answer without a login. docker-compose.yml turns
+    # them off; this keeps them off the vhost as well.
+    location = /metrics {
+        return 404;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:3006;
         proxy_http_version 1.1;

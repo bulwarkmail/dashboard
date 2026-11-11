@@ -54,6 +54,16 @@ test('.env.example names every variable the compose file needs and none that not
   }
 });
 
+test('Grafana\'s own metrics are not served without a login', () => {
+  const compose = withoutComments(read('docker-compose.yml'));
+  const vhost = withoutComments(read('nginx/grafana.conf.template'));
+  const off = /GF_METRICS_ENABLED:\s*"?false"?/.test(compose);
+  const blocked = /location\s+=\s+\/metrics\s*\{\s*return\s+40[34]\s*;/.test(vhost);
+  assert.ok(off || blocked, 'GET /metrics on the admin vhost reaches Grafana, which answers it without a login');
+  // Both, so one change on its own doesn't open it again.
+  assert.ok(off && blocked, 'only one of the two layers is in place');
+});
+
 test('signing in through the identity provider does not make everyone a Viewer', () => {
   const compose = withoutComments(read('docker-compose.yml'));
   const path = /GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH:\s*"([^"]*)"/.exec(compose)?.[1] ?? '';

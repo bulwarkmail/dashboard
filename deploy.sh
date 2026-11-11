@@ -181,8 +181,11 @@ docker network inspect bulwark >/dev/null 2>&1 || docker network create bulwark
 if ! command -v scc >/dev/null 2>&1; then
   log "Installing scc"
   SCC_VERSION=3.5.0
+  # scc_Linux_x86_64.tar.gz of v3.5.0, from the release's checksums.txt.
+  SCC_SHA256=6c31f4d0cf3b7a8c5ca910fa4e451949434798f6541ec5dea4b83f4973e13772
   TMP=$(mktemp -d)
-  curl -sSL "https://github.com/boyter/scc/releases/download/v${SCC_VERSION}/scc_Linux_x86_64.tar.gz" -o "$TMP/scc.tgz"
+  curl -sSfL "https://github.com/boyter/scc/releases/download/v${SCC_VERSION}/scc_Linux_x86_64.tar.gz" -o "$TMP/scc.tgz"
+  printf '%s  %s\n' "$SCC_SHA256" "$TMP/scc.tgz" | sha256sum -c --quiet - || die "the scc download doesn't match its pinned sha256"
   tar -xzf "$TMP/scc.tgz" -C "$TMP"
   install -m 0755 "$TMP/scc" /usr/local/bin/scc
   rm -rf "$TMP"

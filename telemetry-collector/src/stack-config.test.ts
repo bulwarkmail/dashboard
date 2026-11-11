@@ -64,6 +64,30 @@ test('Grafana\'s own metrics are not served without a login', () => {
   assert.ok(off && blocked, 'only one of the two layers is in place');
 });
 
+test('every image is pinned to a version, and nothing is downloaded at container start', () => {
+  const compose = withoutComments(read('docker-compose.yml'));
+  const images = [...compose.matchAll(/^\s*image:\s*(\S+)/gm)].map((m) => m[1]);
+  assert.ok(images.length >= 4);
+  for (const image of images) {
+    const tag = image.includes('@sha256:') ? 'digest' : image.split(':')[1] ?? '';
+    assert.ok(tag === 'digest' || /\d+\.\d+/.test(tag) || /^\d+(-|$)/.test(tag), `${image} is not pinned to a version`);
+    assert.doesNotMatch(image, /latest/, `${image} floats`);
+    // A version for the reader and Dependabot, the digest for what runs.
+    assert.match(image, /:v?\d+\.\d+(\.\d+)?[\w.-]*@sha256:[0-9a-f]{64}$/, `${image} has no version and digest`);
+  }
+  assert.doesNotMatch(compose, /GF_INSTALL_PLUGINS/, 'a plugin is downloaded at every start of the Grafana container');
+  assert.match(read('.github/dependabot.yml'), /package-ecosystem:\s*docker-compose/);
+});
+
+test('deploy.sh checks the scc download against a pinned sha256 before installing it', () => {
+  const deploy = withoutComments(read('deploy.sh'));
+  const at = deploy.indexOf('scc_Linux');
+  assert.ok(at >= 0);
+  const step = deploy.slice(at, deploy.indexOf('install -m', at));
+  assert.match(step, /sha256sum\s+(-c|--check)/, 'scc is installed to /usr/local/bin without a checksum');
+  assert.match(deploy, /\b[0-9a-f]{64}\b/, 'no sha256 is pinned in deploy.sh');
+});
+
 test('Prometheus has no lifecycle API', () => {
   assert.doesNotMatch(withoutComments(read('docker-compose.yml')), /--web\.enable-lifecycle/);
   assert.doesNotMatch(withoutComments(read('docker-compose.yml')), /--web\.enable-admin-api/);

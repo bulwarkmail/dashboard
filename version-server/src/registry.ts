@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { env } from './env.js';
 import { log } from './log.js';
 import { compare, normalize, parse } from './semver.js';
@@ -16,9 +17,10 @@ export interface VersionEntry {
   prerelease: boolean;      // GitHub prerelease flag or a "-beta.N"-style tag
 }
 
-interface OverridesFile {
-  minimumSupported?: string;
-  severities?: Record<string, { severity: Severity; advisory?: string }>;
+/** The checked content of overrides.json. */
+export interface Overrides {
+  minimumSupported: string | null;
+  severities: Map<string, { severity: Severity; advisory: string | null }>;
 }
 
 interface Registry {
@@ -29,12 +31,17 @@ interface Registry {
 }
 
 const OVERRIDES_PATH = path.resolve(
-  path.dirname(new URL(import.meta.url).pathname),
+  path.dirname(fileURLToPath(import.meta.url)),
   '..',
   'overrides.json',
 );
 
+const SEVERITIES: ReadonlySet<string> = new Set<Severity>(['normal', 'security', 'deprecated']);
+const GHSA_ID = /^GHSA(-[0-9a-z]{4}){3}$/;
+
 let current: Registry = empty();
+// The last overrides that were valid; null until the first file was read.
+let overrides: Overrides | null = null;
 
 function empty(): Registry {
   return {
@@ -45,19 +52,90 @@ function empty(): Registry {
   };
 }
 
-function loadOverrides(): OverridesFile {
-  if (!fs.existsSync(OVERRIDES_PATH)) return {};
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Turns the text of overrides.json into overrides. Throws with the reason when the text is no JSON
+ * object, `minimumSupported` is no version, or an entry is malformed: its key is no version, its
+ * severity not one of normal, security, deprecated, or its advisory no comma-separated list of
+ * GHSA ids.
+ */
+export function parseOverrides(text: string): Overrides {
+  const parsed: unknown = JSON.parse(text);
+  if (!isObject(parsed)) throw new Error('the file holds no JSON object');
+  const { minimumSupported, severities } = parsed;
+  if (minimumSupported !== undefined && (typeof minimumSupported !== 'string' || !parse(normalize(minimumSupported)))) {
+    throw new Error('minimumSupported is not a version');
+  }
+  if (severities !== undefined && !isObject(severities)) throw new Error('severities is not an object');
+  const out: Overrides['severities'] = new Map();
+  for (const [version, entry] of Object.entries(severities ?? {})) {
+    const at = `severities[${JSON.stringify(version).slice(0, 40)}]`;
+    if (!parse(version) || version !== normalize(version)) throw new Error(`${at}: the key is not a version`);
+    if (!isObject(entry)) throw new Error(`${at} is not an object`);
+    if (typeof entry.severity !== 'string' || !SEVERITIES.has(entry.severity)) {
+      throw new Error(`${at}.severity is not one of normal, security, deprecated`);
+    }
+    const { advisory } = entry;
+    if (advisory !== undefined && advisory !== null
+      && (typeof advisory !== 'string' || !advisory.split(',').every((id) => GHSA_ID.test(id.trim())))) {
+      throw new Error(`${at}.advisory is not a list of GHSA ids`);
+    }
+    out.set(version, { severity: entry.severity as Severity, advisory: typeof advisory === 'string' ? advisory : null });
+  }
+  return {
+    minimumSupported: typeof minimumSupported === 'string' ? normalize(minimumSupported) : null,
+    severities: out,
+  };
+}
+
+function keepPrevious(problem: 'missing' | 'unreadable' | 'invalid', reason: string, previous: Overrides | null): Overrides {
+  log.error(`overrides.${problem}`, {
+    path: OVERRIDES_PATH,
+    err: reason,
+    using: previous ? 'the overrides loaded before' : 'nothing',
+  });
+  if (!previous) throw new Error(`overrides file ${problem}: ${reason}`);
+  return previous;
+}
+
+/**
+ * The overrides to use after reading overrides.json. `text` is the file's content, or null when the
+ * file does not exist. A missing or broken file keeps `previous`; with nothing loaded before (at
+ * start) it throws, and the server does not start.
+ */
+export function nextOverrides(text: string | null, previous: Overrides | null): Overrides {
+  if (text === null) return keepPrevious('missing', 'the file does not exist', previous);
   try {
-    const raw = fs.readFileSync(OVERRIDES_PATH, 'utf8');
-    const parsed = JSON.parse(raw) as OverridesFile;
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    return parseOverrides(text);
   } catch (err) {
-    log.error('overrides.parse_failed', { err: err instanceof Error ? err.message : String(err) });
-    return {};
+    return keepPrevious('invalid', err instanceof Error ? err.message : String(err), previous);
   }
 }
 
-interface GithubRelease {
+/** The file's text, or null when it does not exist. Throws when it exists but can't be read. */
+function readOverridesFile(): string | null {
+  try {
+    return fs.readFileSync(OVERRIDES_PATH, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+function loadOverrides(read: () => string | null, previous: Overrides | null): Overrides {
+  let text: string | null;
+  try {
+    text = read();
+  } catch (err) {
+    return keepPrevious('unreadable', err instanceof Error ? err.message : String(err), previous);
+  }
+  return nextOverrides(text, previous);
+}
+
+export interface GithubRelease {
   tag_name: string;
   name: string | null;
   html_url: string;
@@ -84,13 +162,23 @@ async function fetchReleases(): Promise<GithubRelease[]> {
   return body as GithubRelease[];
 }
 
-export async function refresh(): Promise<void> {
-  const overrides = loadOverrides();
-  const sevMap = overrides.severities ?? {};
+/** Where refresh() reads from. Tests pass their own; the server uses GitHub and overrides.json. */
+export interface RefreshSources {
+  releases?: () => Promise<GithubRelease[]>;
+  /** The text of overrides.json, or null when it does not exist. */
+  overridesText?: () => string | null;
+}
+
+export async function refresh(sources: RefreshSources = {}): Promise<void> {
+  const { releases: getReleases = fetchReleases, overridesText = readOverridesFile } = sources;
+  // Read before GitHub is asked, so a broken file stops the start even when GitHub is down.
+  const used = loadOverrides(overridesText, overrides);
+  overrides = used;
+  const sevMap = used.severities;
 
   let releases: GithubRelease[];
   try {
-    releases = await fetchReleases();
+    releases = await getReleases();
   } catch (err) {
     log.error('refresh.github_failed', {
       err: err instanceof Error ? err.message : String(err),
@@ -104,7 +192,7 @@ export async function refresh(): Promise<void> {
     const version = normalize(r.tag_name);
     const parsed = parse(version);
     if (!parsed) continue;
-    const override = sevMap[version];
+    const override = sevMap.get(version);
     entries.set(version, {
       version,
       released: r.published_at,
@@ -118,7 +206,7 @@ export async function refresh(): Promise<void> {
 
   // Apply override-only entries (e.g. retroactively flagging a yanked version
   // even if its GitHub release was deleted).
-  for (const [version, override] of Object.entries(sevMap)) {
+  for (const [version, override] of sevMap) {
     if (entries.has(version)) continue;
     const parsed = parse(version);
     if (!parsed) continue;
@@ -128,7 +216,7 @@ export async function refresh(): Promise<void> {
       url: null,
       title: null,
       severity: override.severity,
-      advisory: override.advisory ?? null,
+      advisory: override.advisory,
       prerelease: parsed.pre !== null,
     });
   }
@@ -142,9 +230,7 @@ export async function refresh(): Promise<void> {
     if (!latest || compare(p, parse(latest)!) > 0) latest = e.version;
   }
 
-  const minimumSupported = overrides.minimumSupported && parse(normalize(overrides.minimumSupported))
-    ? normalize(overrides.minimumSupported)
-    : null;
+  const { minimumSupported } = used;
 
   current = {
     fetchedAt: new Date().toISOString(),

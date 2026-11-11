@@ -17,6 +17,7 @@ services:
       POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD: ${POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD}
       POSTGRES_GRAFANA_UMAMI_RO_PASSWORD: ${POSTGRES_GRAFANA_UMAMI_RO_PASSWORD}
       POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD: ${POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD}
+      POSTGRES_QUERY_WATCHDOG_PASSWORD: ${POSTGRES_QUERY_WATCHDOG_PASSWORD}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
@@ -28,6 +29,32 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Cancels statements of Grafana's read-only logins after 20 seconds, which
+  # their own statement_timeout can't promise: a session can switch it off.
+  query-watchdog:
+    image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+    container_name: bulwark-dashboard-query-watchdog
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    user: postgres
+    entrypoint: ["/bin/sh", "/watchdog/query-watchdog.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: grafana_query_watchdog
+      PGDATABASE: postgres
+      PGPASSWORD: ${POSTGRES_QUERY_WATCHDOG_PASSWORD}
+      PGCONNECT_TIMEOUT: "5"
+    volumes:
+      - ./postgres/watchdog:/watchdog:ro
+    # The image declares a data volume; nothing is stored here.
+    tmpfs:
+      - /var/lib/postgresql/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
 
   prometheus:
     image: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06

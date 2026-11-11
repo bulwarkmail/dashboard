@@ -38,12 +38,16 @@ function roleSql(): string {
     .join('\n');
 }
 
-/** Each GRANT naming `role` after TO: the privileges, or `role:<name>` for a membership. */
+/**
+ * Each GRANT naming `role` (any place in the grantee list; PUBLIC is matched as `PUBLIC`): the
+ * privileges, or `role:<name>` for a membership.
+ */
 function grantsTo(role: string): string[] {
   const out: string[] = [];
   for (const statement of roleSql().split(/;|\\gexec/)) {
-    for (const m of statement.matchAll(/\bGRANT\s+([\s\S]+?)\s+TO\s+(\w+)/gi)) {
-      if (m[2] !== role) continue;
+    for (const m of statement.matchAll(/\bGRANT\s+([\s\S]+?)\s+TO\s+(\w+(?:\s*,\s*\w+)*)/gi)) {
+      const grantees = m[2].split(',').map((g) => g.trim());
+      if (!grantees.some((g) => (role === 'PUBLIC' ? g.toUpperCase() === 'PUBLIC' : g === role))) continue;
       const on = /^([\s\S]+?)\s+ON\s+/i.exec(m[1]);
       if (!on) out.push(`role:${m[1].trim()}`);
       else out.push(...on[1].split(',').map((p) => p.trim().toUpperCase()));
@@ -51,6 +55,10 @@ function grantsTo(role: string): string[] {
   }
   return out;
 }
+
+test('the repo\'s SQL grants nothing to PUBLIC', () => {
+  assert.deepEqual(grantsTo('PUBLIC'), []);
+});
 
 test('there are Postgres data sources to check', () => {
   assert.ok(postgresSources().length >= 3);
@@ -72,5 +80,29 @@ for (const source of postgresSources()) {
     for (const privilege of grants) {
       assert.ok(['SELECT', 'USAGE', 'CONNECT'].includes(privilege), `${source.user} is granted ${privilege}`);
     }
+    // Owns nothing and gets no attribute that writes or creates.
+    assert.doesNotMatch(sql, new RegExp(`OWNER\\s+TO\\s+${source.user}\\b`, 'i'));
+    for (const m of sql.matchAll(new RegExp(`ALTER\\s+ROLE\\s+${source.user}\\b([^;]*)`, 'gi'))) {
+      assert.doesNotMatch(m[1], /(?<!NO)(SUPERUSER|CREATEROLE|CREATEDB|REPLICATION|BYPASSRLS)\b/i, `${source.user} gets ${m[1].trim()}`);
+    }
+  });
+
+  // Postgres lets a role change its own settings and password: each run of the grants file puts
+  // them back, and gives the role a temp_file_limit, which only a superuser can change.
+  test(`${source.name}'s login is reset on every run and has a limit it can't lift`, () => {
+    const file = read('postgres/grafana-read-only.sql');
+    assert.match(file, new RegExp(`ALTER ROLE ${source.user}\\s+RESET ALL;`));
+    assert.match(file, /format\('ALTER ROLE %I IN DATABASE %I RESET ALL'/);
+    assert.match(file, new RegExp(`ALTER ROLE ${source.user}\\s+SET temp_file_limit = '\\d+MB';`));
+    assert.match(file, new RegExp(`ALTER ROLE ${source.user}\\s+WITH [^;]*PASSWORD :'`));
   });
 }
+
+test('a service cancels the read-only logins\' long statements, which their own timeout can\'t promise', () => {
+  const compose = read('docker-compose.yml');
+  assert.match(compose, /query-watchdog:[\s\S]*?entrypoint: \["\/bin\/sh", "\/watchdog\/query-watchdog\.sh"\]/);
+  const sql = read('postgres/watchdog/query-watchdog.sql');
+  for (const source of postgresSources()) assert.ok(sql.includes(`'${source.user}'`), `the watchdog leaves ${source.user} alone`);
+  assert.match(sql, /pg_cancel_backend\(pid\)/);
+  assert.match(read('postgres/grafana-read-only.sql'), /GRANT pg_signal_backend, pg_read_all_stats TO grafana_query_watchdog;/);
+});

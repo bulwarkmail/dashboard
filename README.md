@@ -24,6 +24,7 @@ $APP_DIR/
 ├── grafana/dashboards/*.json
 ├── postgres/init.sql           # creates grafana, umami, dashboard, telemetry DBs
 ├── postgres/grafana-read-only.sql  # Grafana's read-only logins, run on every deploy
+├── postgres/watchdog/          # the query-watchdog service's script
 ├── postgres/test/              # checks against a throwaway Postgres
 ├── collector/                  # pm2 service
 ├── telemetry-collector/        # pm2 service
@@ -56,20 +57,35 @@ Postgres data sources don't log in as the owners of the databases but as roles t
 - `grafana_telemetry_ro` - every table of the telemetry collector in `telemetry`.
 
 They own nothing, can't create tables, temporary tables, functions or large objects, connect only to
-their own database, take at most 10 connections and stop a statement after 15 seconds.
-`postgres/grafana-read-only.sql` sets all of this. It is idempotent: a new data directory runs it
-after `init.sql`, and `deploy.sh` runs it on every deploy, which also applies a changed password from
-`.env` (`POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD`, `POSTGRES_GRAFANA_UMAMI_RO_PASSWORD`,
-`POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD`; `deploy.sh` generates missing ones). By hand:
+their own database, take at most 10 connections and write at most 100 MB of temporary files per
+query (`temp_file_limit`, which only a superuser can change). Nothing in the three databases is
+granted to PUBLIC. `postgres/grafana-read-only.sql` sets all of this. It is idempotent: a new data
+directory runs it after `init.sql`, and `deploy.sh` runs it on every deploy, right after Postgres is
+up and again after the apps started. Each run also puts back the logins' passwords from `.env`
+(`POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD`, `POSTGRES_GRAFANA_UMAMI_RO_PASSWORD`,
+`POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD`; `deploy.sh` generates missing ones) and their settings:
+Postgres lets every role change its own password and session defaults, so a Viewer can break its
+own data source until the next deploy, but not keep it broken. The file stops, naming them, when a
+database holds a schema other than `public` or a function that runs as its owner: the apps make
+neither, so look at them and drop them. By hand:
 
 ```sh
 docker compose exec -T postgres psql -X -q -U postgres -d postgres < postgres/grafana-read-only.sql
 ```
 
+A statement of these logins gets 15 seconds by default (`statement_timeout`), but a session can
+switch that off. The `query-watchdog` service (`postgres/watchdog/`) runs every 5 seconds as
+`grafana_query_watchdog` (password `POSTGRES_QUERY_WATCHDOG_PASSWORD`), a login that may only see
+sessions and cancel non-superuser statements: it cancels their statements after 20 seconds and ends
+their sessions idle in a transaction for more than 60, whatever the session set. A session can still
+raise its own `work_mem` for those 20 seconds.
+
 `postgres/test/effective-privileges.sh` checks what the roles can do. It needs Docker and node,
-starts a throwaway `postgres:16-alpine` with `init.sql`, lets the owners create their tables, runs
-the grants file twice, asks Postgres what each role may do, and runs every dashboard panel's SQL
-as its data source's role. It removes its container at the end and prints "all ok" or "FAILED":
+starts a throwaway `postgres:16-alpine` with `init.sql`, lets the owners create their tables (and
+leave a grant to PUBLIC behind), runs the grants file twice, asks Postgres what each role may do,
+changes a login's settings and password as the login and checks the grants file puts them back,
+lets the watchdog cancel a long statement, and runs every dashboard panel's SQL as its data
+source's role. It removes its container at the end and prints "all ok" or "FAILED":
 
 ```sh
 bash postgres/test/effective-privileges.sh .

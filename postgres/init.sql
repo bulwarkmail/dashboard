@@ -9,6 +9,7 @@
 \set grafana_dashboard_ro_password `echo "$POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD"`
 \set grafana_umami_ro_password     `echo "$POSTGRES_GRAFANA_UMAMI_RO_PASSWORD"`
 \set grafana_telemetry_ro_password `echo "$POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD"`
+\set query_watchdog_password       `echo "$POSTGRES_QUERY_WATCHDOG_PASSWORD"`
 
 CREATE USER grafana   WITH PASSWORD :'grafana_password';
 CREATE USER umami     WITH PASSWORD :'umami_password';
@@ -27,3 +28,5 @@ CREATE DATABASE telemetry OWNER telemetry;
 CREATE ROLE grafana_dashboard_ro LOGIN PASSWORD :'grafana_dashboard_ro_password';
 CREATE ROLE grafana_umami_ro     LOGIN PASSWORD :'grafana_umami_ro_password';
 CREATE ROLE grafana_telemetry_ro LOGIN PASSWORD :'grafana_telemetry_ro_password';
+-- Cancels their statements that run too long (postgres/watchdog/).
+CREATE ROLE grafana_query_watchdog LOGIN PASSWORD :'query_watchdog_password';

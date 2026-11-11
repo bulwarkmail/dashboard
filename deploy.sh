@@ -63,7 +63,7 @@ if [ ! -f .env ]; then
 fi
 # Secrets added after the first release: generated in an existing .env too.
 for name in POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD POSTGRES_GRAFANA_UMAMI_RO_PASSWORD POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD \
-            UMAMI_ADMIN_PASSWORD; do
+            POSTGRES_QUERY_WATCHDOG_PASSWORD UMAMI_ADMIN_PASSWORD; do
   ensure_secret "$name"
 done
 if [ "$FIRST_RUN" = 1 ]; then
@@ -180,6 +180,16 @@ for i in {1..30}; do
   fi
   sleep 2
 done
+
+# Grafana's read-only database logins (postgres/grafana-read-only.sql): the
+# roles, their passwords and settings from .env, what they may read. Applied
+# as soon as Postgres is up, so Grafana's data sources work while the builds
+# run, and again in step 8c, once Umami has made its tables.
+apply_grafana_logins() {
+  log "Applying Grafana's read-only database logins"
+  docker compose exec -T postgres psql -X -q -U postgres -d postgres < "$APP_DIR/postgres/grafana-read-only.sql"
+}
+apply_grafana_logins
 
 # --- 5. shared docker network for cross-stack scraping --------------------
 docker network inspect bulwark >/dev/null 2>&1 || docker network create bulwark
@@ -303,17 +313,14 @@ if [ -d "$APP_DIR/version-server" ]; then
   fi
 fi
 
-# --- 8c. Grafana's read-only database logins ------------------------------
-# On every deploy: the three roles Grafana's data sources log in with, their
-# passwords from .env and what they may read (postgres/grafana-read-only.sql).
+# --- 8c. Grafana's read-only database logins, again ------------------------
 # Umami creates its tables on its first start; wait for them, so the tables
 # the dashboards read get their grant in this run.
 for i in {1..60}; do
   if [ "$(docker compose exec -T postgres psql -X -At -U postgres -d umami -c "SELECT to_regclass('public.website_event') IS NOT NULL" 2>/dev/null)" = "t" ]; then break; fi
   sleep 2
 done
-log "Applying Grafana's read-only database logins"
-docker compose exec -T postgres psql -X -q -U postgres -d postgres < "$APP_DIR/postgres/grafana-read-only.sql"
+apply_grafana_logins
 
 # --- 9a. Umami: replace the default login ---------------------------------
 # Umami creates the account admin with a well-known password on its first

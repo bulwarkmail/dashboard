@@ -59,11 +59,36 @@ function describeLimit(ms: number): string {
 
 interface Exit { ok: boolean; message: string }
 
-/** Resolves once the child has exited and its output is closed; a failure carries the last line it wrote to stderr. */
+/** Most of a program's stderr kept for its failure line, in whole lines. */
+const STDERR_KEEP = 64 * 1024;
+
+/**
+ * Resolves once the child has exited and its output is closed; a failure carries the line of
+ * stderr that says what failed. stderr is kept in whole lines only (the newest ones), and a line
+ * longer than STDERR_KEEP is dropped, so no line is ever cut before errorText() has cleaned it.
+ */
 function exited(child: ChildProcess, what: string): Promise<Exit> {
   let stderr = '';
+  let skipping = false;
   child.stderr?.setEncoding('utf8');
-  child.stderr?.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
+  child.stderr?.on('data', (chunk: string) => {
+    if (skipping) {
+      const nl = chunk.indexOf('\n');
+      if (nl === -1) return;
+      chunk = chunk.slice(nl + 1);
+      skipping = false;
+    }
+    stderr += chunk;
+    while (stderr.length > STDERR_KEEP) {
+      const nl = stderr.indexOf('\n');
+      if (nl === -1) {
+        stderr = '';
+        skipping = true;
+        break;
+      }
+      stderr = stderr.slice(nl + 1);
+    }
+  });
   return new Promise((resolve) => {
     child.once('error', (e) => resolve({ ok: false, message: `${what} failed: ${e.message}` }));
     child.once('close', (code, signal) => resolve(code === 0
@@ -109,19 +134,26 @@ function basicCredential(token: string): string {
 }
 
 /**
- * The environment for git: the parent's, plus the GitHub token as an
- * `http.https://github.com/.extraheader` entry added after the parent's own GIT_CONFIG_COUNT
- * entries. The token is never part of a URL or an argument, so git neither stores nor prints it.
- * Without a token nothing is added and public repositories are cloned anonymously.
+ * The environment for git: the parent's, plus config entries added after the parent's own
+ * GIT_CONFIG_COUNT entries:
+ * - `http.followRedirects=false`: git follows no redirect, so its requests (and the header below)
+ *   only ever go to the URL the scan built. git would send the header to whatever host a redirect
+ *   names, because it matches `http.<url>.*` against the remote URL, not the redirected one.
+ * - the GitHub token as an `http.https://github.com/.extraheader` entry. The token is never part of
+ *   a URL or an argument, so git neither stores nor prints it. Without a token there is no header
+ *   and public repositories are cloned anonymously.
  */
 export function gitEnv(token: string, parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...parent, GIT_TERMINAL_PROMPT: '0' };
-  if (!token) return out;
+  const entries: Array<[string, string]> = [['http.followRedirects', 'false']];
+  if (token) entries.push(['http.https://github.com/.extraheader', `Authorization: Basic ${basicCredential(token)}`]);
   const count = Number(parent.GIT_CONFIG_COUNT || 0);
   const n = Number.isSafeInteger(count) && count > 0 ? count : 0;
-  out[`GIT_CONFIG_KEY_${n}`] = 'http.https://github.com/.extraheader';
-  out[`GIT_CONFIG_VALUE_${n}`] = `Authorization: Basic ${basicCredential(token)}`;
-  out.GIT_CONFIG_COUNT = String(n + 1);
+  entries.forEach(([key, value], i) => {
+    out[`GIT_CONFIG_KEY_${n + i}`] = key;
+    out[`GIT_CONFIG_VALUE_${n + i}`] = value;
+  });
+  out.GIT_CONFIG_COUNT = String(n + entries.length);
   return out;
 }
 
@@ -164,7 +196,8 @@ function cloneDir(r: RepoRow): string {
  * that is not a branch name (a revision expression, an empty string) fail the repository's scan.
  */
 async function branchRef(branch: unknown, signal: AbortSignal): Promise<string> {
-  const refused = new Error(`default branch ${JSON.stringify(String(branch)).slice(0, 120)} is not a branch name`);
+  // The value is quoted whole; errorText() cleans the message and then cuts it.
+  const refused = new Error(`default branch ${JSON.stringify(String(branch))} is not a branch name`);
   if (typeof branch !== 'string' || branch === '' || branch.startsWith('-') || branch === 'HEAD') throw refused;
   const ref = `refs/heads/${branch}`;
   try {
@@ -213,11 +246,13 @@ async function commitStats(gitDir: string, ref: string, signal: AbortSignal): Pr
   return { total, last30d, authors30d, head };
 }
 
-/** The line of a program's stderr that says what failed: git's fatal or error line, otherwise the last line. */
+/**
+ * The line of a program's stderr that says what failed: git's fatal or error line, otherwise the
+ * last line. Whole: errorText() cleans it first and cuts it after.
+ */
 function failureLine(text: string): string {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-  const line = lines.find((l) => l.startsWith('fatal:')) ?? lines.find((l) => l.startsWith('error:')) ?? lines.at(-1) ?? '';
-  return line.slice(0, 300);
+  return lines.find((l) => l.startsWith('fatal:')) ?? lines.find((l) => l.startsWith('error:')) ?? lines.at(-1) ?? '';
 }
 
 /** Counts the entries of a tar stream as it passes, from its 512-byte headers. */
@@ -442,9 +477,11 @@ export async function runGitScan(): Promise<void> {
       } catch (e) {
         err++;
         const reason = deadline.signal.aborted ? `stopped after ${describeLimit(SCAN_DEADLINE_MS)}, the time limit for one repository` : e;
+        // The id comes from the table: cleaned and cut like the message.
+        const repo = errorText(String(r.id), tokenForms(), 200);
         const msg = errorText(reason, tokenForms());
-        if (!firstError) firstError = `${String(r.id).slice(0, 200)}: ${msg}`;
-        log.warn('git.repo_failed', { repo: r.id, err: msg });
+        if (!firstError) firstError = `${repo}: ${msg}`;
+        log.warn('git.repo_failed', { repo, err: msg });
       } finally {
         clearTimeout(timer);
       }

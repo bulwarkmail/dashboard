@@ -207,9 +207,12 @@ test('git gets the token as a header for github.com only, after the config entri
   assert.equal(config(withToken, '--get', 'user.name'), 'kept', 'the config entry from the parent environment was replaced');
   assert.throws(() => config(withToken, '--get-urlmatch', 'http.extraheader', 'https://example.org/acme/clean.git'), 'the header is sent to other hosts');
   assert.equal(withToken.GIT_CONFIG_GLOBAL, parent.GIT_CONFIG_GLOBAL, 'the parent environment was not passed on');
-  // No token: nothing is added, public repositories clone without a header.
+  // git follows no redirect, with or without a token, so the header never goes to another host.
+  assert.equal(config(withToken, '--get', 'http.followRedirects'), 'false');
+  // No token: no header, public repositories clone without one.
   const anonymous = gitEnv('', parent);
-  assert.equal(anonymous.GIT_CONFIG_COUNT, '1');
+  assert.equal(config(anonymous, '--get', 'http.followRedirects'), 'false');
+  assert.equal(config(anonymous, '--get', 'user.name'), 'kept');
   assert.ok(!Object.values(anonymous).some((v) => v?.includes('Authorization')), 'a header was added without a token');
 });
 

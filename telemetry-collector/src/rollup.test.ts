@@ -83,6 +83,21 @@ test('the daily rollup leaves desktop out of everything but the platform mix', a
   assert.match(stats, /server_base AS \(SELECT \* FROM base WHERE NOT desktop\)/);
 });
 
+test('the rollup picks finished days only, none in the future, and the last two finished days again', async (t) => {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+    return { rows: [{ id: 1 }], rowCount: 0 };
+  });
+  await runRollup(Date.parse('2026-11-10T08:00:00Z'));
+  const select = calls.find((c) => c.sql.startsWith('SELECT DISTINCT'));
+  assert.ok(select, 'no day selection');
+  // Before today (so never today or a day after it), and either without a row yet or one of
+  // the two days before today. rollup-late-heartbeats.test.ts runs this against Postgres.
+  assert.match(select.sql, /WHERE day < \$1 AND \(day >= \$2 OR day NOT IN \(SELECT day FROM daily_rollups\)\)/);
+  assert.deepEqual(select.params, ['2026-11-10', '2026-11-08']);
+});
+
 test('the rollup doesn\'t add desktop to the instances ever seen', async (t) => {
   const calls: string[] = [];
   t.mock.method(pool, 'query', async (sql: string) => {

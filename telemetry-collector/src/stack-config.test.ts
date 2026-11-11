@@ -54,6 +54,19 @@ test('.env.example names every variable the compose file needs and none that not
   }
 });
 
+test('.env.example names the collector\'s settings, and the README the version server\'s health fields', () => {
+  const example = read('.env.example');
+  const collectorReads = [...read('collector/src/env.ts').matchAll(/num\('(COLLECTOR_[A-Z0-9_]+)'/g)].map((m) => m[1]);
+  const limits = ['COLLECTOR_SCAN_DEADLINE_MS', 'COLLECTOR_UNPACK_MAX_BYTES', 'COLLECTOR_UNPACK_MAX_ENTRIES'];
+  for (const name of new Set([...collectorReads, ...limits, 'GITHUB_ORG'])) {
+    assert.match(example, new RegExp(`^#?${name}=`, 'm'), `.env.example has no ${name}`);
+  }
+  const readme = read('README.md');
+  for (const word of [...limits, 'GITHUB_ORG', 'overrides.json', 'overridesStale', 'overridesProblem']) {
+    assert.ok(readme.includes(word), `the README doesn't mention ${word}`);
+  }
+});
+
 test('Grafana\'s own metrics are not served without a login', () => {
   const compose = withoutComments(read('docker-compose.yml'));
   const vhost = withoutComments(read('nginx/grafana.conf.template'));

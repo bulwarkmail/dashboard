@@ -29,6 +29,7 @@ fs.writeFileSync(path.join(bin, 'git'), [
 const TOKEN = 'ghp_FAKEtokenFAKEtokenFAKEtokenFAKE0000';
 fs.writeFileSync(gitConfig, `[url "file://${remote}/"]\n\tinsteadOf = https://github.com/\n`);
 process.env.GITHUB_TOKEN = TOKEN;
+process.env.GITHUB_ORG = 'acme';
 process.env.POSTGRES_DASHBOARD_PASSWORD = 'test';
 process.env.COLLECTOR_REPOS_DIR = reposDir;
 process.env.GIT_TERMINAL_PROMPT = '0';

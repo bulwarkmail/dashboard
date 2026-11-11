@@ -34,6 +34,7 @@ fs.writeFileSync(path.join(bin, 'tar'), ['#!/bin/sh', 'echo "tar $$" >> "$PID_FI
 fs.writeFileSync(gitConfig, `[url "file://${remote}/"]\n\tinsteadOf = https://github.com/\n`);
 
 process.env.GITHUB_TOKEN = 'ghp_FAKEtokenFAKEtokenFAKEtokenFAKE0000';
+process.env.GITHUB_ORG = 'acme';
 process.env.POSTGRES_DASHBOARD_PASSWORD = 'test';
 process.env.COLLECTOR_REPOS_DIR = reposDir;
 process.env.COLLECTOR_SCAN_DEADLINE_MS = String(DEADLINE_MS);

@@ -38,6 +38,7 @@ fs.writeFileSync(gitConfig, [
 ].join('\n'));
 
 process.env.GITHUB_TOKEN = TOKEN;
+process.env.GITHUB_ORG = 'acme';
 process.env.POSTGRES_DASHBOARD_PASSWORD = 'test';
 process.env.COLLECTOR_REPOS_DIR = reposDir;
 process.env.PWN_MARKER = marker;

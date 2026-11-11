@@ -175,20 +175,27 @@ function isGithubName(value: unknown): value is string {
 }
 
 /**
- * The clone directory of a row, `<reposDir>/<owner>/<name>`. Throws when the id, owner or name is
- * not a GitHub name, before anything becomes a path or part of a URL.
+ * Where a row's repository is cloned to (`<reposDir>/<owner>/<name>`) and from
+ * (`https://github.com/<owner>/<name>.git`). Throws, before anything becomes a path or part of a
+ * URL, when the id, owner or name is not a GitHub name, when the owner is not the configured
+ * organisation (compared without case, as GitHub does), or when the id is not that owner and name:
+ * the repos table can be written by others, so a row may only name a repository of the organisation.
  */
-function cloneDir(r: RepoRow): string {
+function cloneTarget(r: RepoRow): { dir: string; url: string } {
   const parts = typeof r.id === 'string' ? r.id.split('/') : [];
   if (parts.length !== 2 || !parts.every(isGithubName)) throw new Error('repository id is not <owner>/<name>');
   if (!isGithubName(r.owner) || !isGithubName(r.name)) throw new Error('owner or name is not a GitHub name');
+  if (r.owner.toLowerCase() !== env.githubOrg.toLowerCase()) {
+    throw new Error(`owner is not the configured organisation (${env.githubOrg})`);
+  }
+  if (r.id !== `${r.owner}/${r.name}`) throw new Error('repository id does not match the row\'s owner and name');
   const root = path.resolve(env.reposDir);
   const dir = path.resolve(root, parts[0], parts[1]);
   const rel = path.relative(root, dir);
   if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
     throw new Error('clone directory is outside the repos folder');
   }
-  return dir;
+  return { dir, url: `https://github.com/${r.owner}/${r.name}.git` };
 }
 
 /**
@@ -208,10 +215,9 @@ async function branchRef(branch: unknown, signal: AbortSignal): Promise<string> 
   return ref;
 }
 
-async function ensureClone(dir: string, owner: string, name: string, signal: AbortSignal): Promise<void> {
+async function ensureClone(dir: string, url: string, signal: AbortSignal): Promise<void> {
   let exists = false;
   try { await fs.stat(path.join(dir, 'objects')); exists = true; } catch { /* not yet */ }
-  const url = `https://github.com/${owner}/${name}.git`;
   if (!exists) {
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
     await git(['clone', '--bare', '--filter=blob:none', '--', url, dir], 'clone', signal, 64 * 1024 * 1024);
@@ -428,13 +434,13 @@ async function locByLanguage(gitDir: string, ref: string, signal: AbortSignal): 
 
 /** One repository: clone or fetch, commit counts, line counts. Its programs are stopped when `signal` aborts. */
 async function scanRepository(r: RepoRow, signal: AbortSignal): Promise<void> {
-  // Names are checked before anything is created or fetched.
-  const dir = cloneDir(r);
+  // Names and the organisation are checked before anything is created, started or fetched.
+  const { dir, url } = cloneTarget(r);
   const branchRow = await pool.query<{ default_branch: string }>(
     `SELECT default_branch FROM repos WHERE id=$1`, [r.id],
   );
   const ref = await branchRef(branchRow.rows[0]?.default_branch ?? 'main', signal);
-  await ensureClone(dir, r.owner, r.name, signal);
+  await ensureClone(dir, url, signal);
   const stats = await commitStats(dir, ref, signal);
   await pool.query(
     `INSERT INTO commit_snapshots (repo_id, total_commits, commits_last_30d, authors_last_30d, head_sha)

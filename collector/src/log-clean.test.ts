@@ -67,7 +67,8 @@ test('a credential the cleaning was not told about, in the forms the old clones 
 });
 
 test('the cleaning does not take much longer per character on long input', () => {
-  // Growth, not time: four times the input may take about 16 times as long for a quadratic rule.
+  // Growth, not time: four times the input takes about 4 times as long for linear rules and about
+  // 16 times for a quadratic one. The fastest of five runs each keeps other test files' load out.
   for (const unit of ['a.', '-eyJa', 'https:x', 'Basic ']) {
     const time = (n: number) => {
       const text = unit.repeat(n);
@@ -75,9 +76,10 @@ test('the cleaning does not take much longer per character on long input', () =>
       errorText(text, [], 200);
       return Number(process.hrtime.bigint() - start);
     };
+    const fastest = (n: number) => Math.min(...Array.from({ length: 5 }, () => time(n)));
     time(2000);
-    const small = Math.min(time(20000), time(20000));
-    const large = Math.min(time(80000), time(80000));
-    assert.ok(large / small < 8, `${JSON.stringify(unit)}: 4 times the input took ${(large / small).toFixed(1)} times as long`);
+    const small = fastest(20000);
+    const large = fastest(80000);
+    assert.ok(large / small < 10, `${JSON.stringify(unit)}: 4 times the input took ${(large / small).toFixed(1)} times as long`);
   }
 });

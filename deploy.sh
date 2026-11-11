@@ -19,9 +19,36 @@ die() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
 
 rand() { openssl rand -hex 32; }
 
+# Give NAME a fresh secret in .env when it is missing or empty; a value that
+# is set is never changed. Only shell builtins handle the value, so it never
+# shows up in the process list.
+ensure_secret() {
+  local name="$1" line value tmp found=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in "$name="?*) return 0 ;; esac
+  done < .env
+  value=$(rand)
+  tmp=$(mktemp "$APP_DIR/.env.XXXXXX")
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$line" = "$name=" ]; then
+      printf '%s=%s\n' "$name" "$value"
+      found=1
+    else
+      printf '%s\n' "$line"
+    fi
+  done < .env > "$tmp"
+  [ "$found" = 1 ] || printf '%s=%s\n' "$name" "$value" >> "$tmp"
+  # Rewrite in place, so .env keeps its owner and mode.
+  cat "$tmp" > .env
+  rm -f "$tmp"
+  log "Generated $name in .env"
+}
+
 # --- 1. .env ---------------------------------------------------------------
+FIRST_RUN=0
 if [ ! -f .env ]; then
   log "Generating .env with fresh secrets — fill in domain/email values before re-running"
+  FIRST_RUN=1
   cp .env.example .env
   chmod 600 .env
   sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(rand)|"                       .env
@@ -32,6 +59,12 @@ if [ ! -f .env ]; then
   sed -i "s|^GRAFANA_ADMIN_PASSWORD=.*|GRAFANA_ADMIN_PASSWORD=$(rand)|"             .env
   sed -i "s|^UMAMI_APP_SECRET=.*|UMAMI_APP_SECRET=$(rand)|"                         .env
   sed -i "s|^BASIC_AUTH_PASSWORD=.*|BASIC_AUTH_PASSWORD=$(rand)|"                   .env
+fi
+# Secrets added after the first release: generated in an existing .env too.
+for name in POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD POSTGRES_GRAFANA_UMAMI_RO_PASSWORD POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD; do
+  ensure_secret "$name"
+done
+if [ "$FIRST_RUN" = 1 ]; then
   log "Wrote .env. Edit GRAFANA_DOMAIN / UMAMI_DOMAIN / TELEMETRY_DOMAIN / VERSION_DOMAIN / LE_EMAIL, then re-run."
   exit 0
 fi
@@ -203,6 +236,18 @@ if [ -d "$APP_DIR/version-server" ]; then
     pm2 save
   fi
 fi
+
+# --- 8c. Grafana's read-only database logins ------------------------------
+# On every deploy: the three roles Grafana's data sources log in with, their
+# passwords from .env and what they may read (postgres/grafana-read-only.sql).
+# Umami creates its tables on its first start; wait for them, so the tables
+# the dashboards read get their grant in this run.
+for i in {1..60}; do
+  if [ "$(docker compose exec -T postgres psql -X -At -U postgres -d umami -c "SELECT to_regclass('public.website_event') IS NOT NULL" 2>/dev/null)" = "t" ]; then break; fi
+  sleep 2
+done
+log "Applying Grafana's read-only database logins"
+docker compose exec -T postgres psql -X -q -U postgres -d postgres < "$APP_DIR/postgres/grafana-read-only.sql"
 
 # --- 9. Bootstrap public-dashboard share token ----------------------------
 # Wait for Grafana to come up, then ensure the "bulwark-public" dashboard

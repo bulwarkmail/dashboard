@@ -108,6 +108,14 @@ CREATE TABLE IF NOT EXISTS collector_runs (
   repos_err    integer,
   error        text
 );
+-- Grafana's read-only login (postgres/grafana-read-only.sql) may read every
+-- table here but this one: its error text can hold credentials. The default
+-- privileges grant it at CREATE TABLE, so take it back right here.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'grafana_dashboard_ro') THEN
+    REVOKE ALL ON TABLE collector_runs FROM grafana_dashboard_ro;
+  END IF;
+END $$;
 
 -- Downloads dashboard (added 2026-10-19) -------------------------------------
 

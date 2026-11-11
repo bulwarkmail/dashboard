@@ -9,19 +9,23 @@ datasources:
     isDefault: true
     editable: false
 
+  # Grafana sends any SQL a signed-in user posts to a data source, so these
+  # log in with roles that can only read (postgres/grafana-read-only.sql).
+  # Each role takes at most 10 connections; Grafana keeps below that.
   - name: Dashboard (Postgres)
     uid: dashboard_pg
     type: postgres
     access: proxy
     url: postgres:5432
-    user: dashboard
+    user: grafana_dashboard_ro
     secureJsonData:
-      password: ${POSTGRES_DASHBOARD_PASSWORD}
+      password: ${POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD}
     jsonData:
       database: dashboard
       sslmode: disable
       postgresVersion: 1600
       timescaledb: false
+      maxOpenConns: 8
     editable: false
 
   - name: Umami (Postgres)
@@ -29,14 +33,15 @@ datasources:
     type: postgres
     access: proxy
     url: postgres:5432
-    user: umami
+    user: grafana_umami_ro
     secureJsonData:
-      password: ${POSTGRES_UMAMI_PASSWORD}
+      password: ${POSTGRES_GRAFANA_UMAMI_RO_PASSWORD}
     jsonData:
       database: umami
       sslmode: disable
       postgresVersion: 1600
       timescaledb: false
+      maxOpenConns: 8
     editable: false
 
   - name: Telemetry (Postgres)
@@ -44,12 +49,13 @@ datasources:
     type: postgres
     access: proxy
     url: postgres:5432
-    user: telemetry
+    user: grafana_telemetry_ro
     secureJsonData:
-      password: ${POSTGRES_TELEMETRY_PASSWORD}
+      password: ${POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD}
     jsonData:
       database: telemetry
       sslmode: disable
       postgresVersion: 1600
       timescaledb: false
+      maxOpenConns: 8
     editable: false

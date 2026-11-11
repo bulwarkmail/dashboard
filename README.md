@@ -4,7 +4,7 @@ Internal observability stack for the Bulwark org: Grafana + Prometheus + Postgre
 
 ## Components
 
-- **Grafana** - dashboards, behind nginx basic auth, host port `3006`.
+- **Grafana** - dashboards, host port `3006`. The admin vhost has no nginx basic auth; Grafana's own login is the gate: the local admin account, or authentik with the `grafana-admin` role (Admin) or `grafana-viewer` role (Viewer). Anyone authentik lets through without one of those roles is refused. Its Postgres data sources log in with read-only roles, see below.
 - **Prometheus** - scrapes `/metrics` from `relay`, `stalwart`, and the host. Internal docker network only.
 - **Postgres 16** - backing store for Grafana, Umami, and the GitHub collector. Bound to `127.0.0.1:5432`.
 - **Umami** - privacy-friendly web analytics. Public vhost; tracking script reachable from end-user browsers.
@@ -22,6 +22,8 @@ $APP_DIR/
 ├── grafana/provisioning/...
 ├── grafana/dashboards/*.json
 ├── postgres/init.sql           # creates grafana, umami, dashboard, telemetry DBs
+├── postgres/grafana-read-only.sql  # Grafana's read-only logins, run on every deploy
+├── postgres/test/              # checks against a throwaway Postgres
 ├── collector/                  # pm2 service
 ├── telemetry-collector/        # pm2 service
 └── data/
@@ -39,7 +41,38 @@ $APP_DIR/
 
 First run: generates `.env` with random secrets and exits - fill in `GRAFANA_DOMAIN`, `UMAMI_DOMAIN`, `TELEMETRY_DOMAIN`, `LE_EMAIL`, then re-run.
 
-Subsequent runs: render nginx vhost templates, request any missing Let's Encrypt certs, pull compose images, restart services, rebuild + reload the pm2 collectors.
+Subsequent runs: render nginx vhost templates, request any missing Let's Encrypt certs, pull compose images, restart services, rebuild + reload the pm2 collectors, apply Grafana's read-only database logins.
+
+## Grafana's database logins
+
+Grafana runs any SQL a signed-in user sends to a data source, Viewers included. So its three
+Postgres data sources don't log in as the owners of the databases but as roles that can only read:
+
+- `grafana_dashboard_ro` - every table of the GitHub collector in `dashboard`, also tables it adds
+  later, except `collector_runs`.
+- `grafana_umami_ro` - only `website`, `website_event`, `session` and `event_data` in `umami`.
+  Umami's other tables (logins, API keys, two-factor secrets) stay closed.
+- `grafana_telemetry_ro` - every table of the telemetry collector in `telemetry`.
+
+They own nothing, can't create tables, temporary tables, functions or large objects, connect only to
+their own database, take at most 10 connections and stop a statement after 15 seconds.
+`postgres/grafana-read-only.sql` sets all of this. It is idempotent: a new data directory runs it
+after `init.sql`, and `deploy.sh` runs it on every deploy, which also applies a changed password from
+`.env` (`POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD`, `POSTGRES_GRAFANA_UMAMI_RO_PASSWORD`,
+`POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD`; `deploy.sh` generates missing ones). By hand:
+
+```sh
+docker compose exec -T postgres psql -X -q -U postgres -d postgres < postgres/grafana-read-only.sql
+```
+
+`postgres/test/effective-privileges.sh` checks what the roles can do. It needs Docker and node,
+starts a throwaway `postgres:16-alpine` with `init.sql`, lets the owners create their tables, runs
+the grants file twice, asks Postgres what each role may do, and runs every dashboard panel's SQL
+as its data source's role. It removes its container at the end and prints "all ok" or "FAILED":
+
+```sh
+bash postgres/test/effective-privileges.sh .
+```
 
 ## Downloads dashboard (`grafana/dashboards/downloads.json`, uid `bulwark-downloads`)
 

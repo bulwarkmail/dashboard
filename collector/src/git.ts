@@ -24,10 +24,17 @@ const STOP_GRACE_MS = 5000;
 // (git's transport helpers, for example).
 const OWN_GROUP = process.platform !== 'win32';
 
-/** Stops a child and its process group: SIGTERM, then SIGKILL if it is still running after the grace time. */
+const stopping = new WeakSet<ChildProcess>();
+
+/**
+ * Stops a child and its process group: SIGTERM, then SIGKILL if it is still running after the grace
+ * time. Once the program itself has exited, whatever is left in its group (a helper that ignores
+ * SIGTERM and may hold the program's output open) is killed at once.
+ */
 function stop(child: ChildProcess): void {
   const pid = child.pid;
-  if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  if (pid === undefined || child.exitCode !== null || child.signalCode !== null || stopping.has(child)) return;
+  stopping.add(child);
   const send = (sig: NodeJS.Signals) => {
     try {
       if (OWN_GROUP) process.kill(-pid, sig);
@@ -37,7 +44,10 @@ function stop(child: ChildProcess): void {
   send('SIGTERM');
   const timer = setTimeout(() => send('SIGKILL'), STOP_GRACE_MS);
   timer.unref();
-  child.once('exit', () => clearTimeout(timer));
+  child.once('exit', () => {
+    clearTimeout(timer);
+    send('SIGKILL');
+  });
 }
 
 /** Stops the child when `signal` is aborted (the repository's deadline has passed). */
@@ -355,12 +365,21 @@ async function unpack(gitDir: string, ref: string, dest: string, signal: AbortSi
   if (failures.length) throw new Error(failures.join('; '));
 }
 
+// The unpacked tree is walked with paths as bytes: a file or folder name that is no UTF-8 can still
+// be opened, as `find` and `wc` open it.
+const SEP = Buffer.from(path.sep);
+
+/** The entries of a folder, with names as bytes. */
+function entries(dir: Buffer) {
+  return fs.readdir(dir, { withFileTypes: true, encoding: 'buffer' });
+}
+
 /** Newlines in the regular files under `dir`. Symlinks are neither followed nor counted. */
-async function countLines(dir: string, signal: AbortSignal): Promise<number> {
+async function countLines(dir: Buffer, signal: AbortSignal): Promise<number> {
   let total = 0;
-  for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+  for (const e of await entries(dir)) {
     if (signal.aborted) throw new Error('stopped');
-    const full = path.join(dir, e.name);
+    const full = Buffer.concat([dir, SEP, e.name]);
     if (e.isDirectory()) total += await countLines(full, signal);
     else if (e.isFile()) {
       try {
@@ -390,18 +409,17 @@ async function locByLanguage(gitDir: string, ref: string, signal: AbortSignal): 
       'LICENSE', 'LICENSE.txt', 'LICENSE.md', 'COPYING', 'COPYING.txt',
     ]);
     let stripped = 0;
-    async function walk(dir: string): Promise<void> {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
-      for (const e of entries) {
-        const full = path.join(dir, e.name);
+    async function walk(dir: Buffer): Promise<void> {
+      for (const e of await entries(dir)) {
+        const full = Buffer.concat([dir, SEP, e.name]);
         if (e.isDirectory()) await walk(full);
-        else if (e.isFile() && stripNames.has(e.name)) {
+        else if (e.isFile() && stripNames.has(e.name.toString())) {
           await fs.rm(full, { force: true });
           stripped++;
         }
       }
     }
-    await walk(tmp).catch(() => undefined);
+    await walk(Buffer.from(tmp)).catch(() => undefined);
     log.info('git.loc.strip', { repo: gitDir, stripped });
     try {
       const stdout = await run('scc', ['--no-cocomo', '--no-complexity', '--format', 'json', tmp], 'scc', signal, {
@@ -421,7 +439,7 @@ async function locByLanguage(gitDir: string, ref: string, signal: AbortSignal): 
     } catch (e) {
       if (signal.aborted) throw e;
       // Fallback: total lines under all tracked files, language=ALL.
-      const total = await countLines(tmp, signal).catch((err: unknown) => {
+      const total = await countLines(Buffer.from(tmp), signal).catch((err: unknown) => {
         if (signal.aborted) throw err;
         return 0;
       });

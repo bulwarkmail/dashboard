@@ -27,6 +27,24 @@ function num(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/** The longest delay a Node timer holds; setInterval runs anything longer after 1 ms. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * A refresh interval from the environment: a positive number of milliseconds a timer holds. Any
+ * other value that is set (0, a negative number, a blank value, text, too long) gives `fallback`,
+ * with one log line naming the setting and the value used.
+ */
+function interval(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const n = raw.trim() === '' ? NaN : Number(raw);
+  if (Number.isFinite(n) && n > 0 && n <= MAX_TIMER_MS) return n;
+  // The same line format as log.ts, which env.ts does not import.
+  process.stdout.write(`${JSON.stringify({ ts: new Date().toISOString(), level: 'warn', msg: 'setting_ignored', setting: name, given: raw.slice(0, 40), used: fallback })}\n`);
+  return fallback;
+}
+
 export const env = {
   port: num('VERSION_SERVER_PORT', 3009),
   host: process.env.VERSION_SERVER_HOST || '127.0.0.1',
@@ -34,7 +52,7 @@ export const env = {
   githubRepo: process.env.VERSION_SERVER_REPO || 'bulwarkmail/webmail',
   // Refresh interval in milliseconds. One hour by default; the public endpoint
   // is allowed to be stale by up to this much.
-  refreshIntervalMs: num('VERSION_SERVER_REFRESH_MS', 60 * 60 * 1000),
+  refreshIntervalMs: interval('VERSION_SERVER_REFRESH_MS', 60 * 60 * 1000),
   // Optional GitHub token to lift the unauthenticated rate limit (60 req/h/IP).
   // Public-repo reads work fine without one.
   githubToken: process.env.VERSION_SERVER_GITHUB_TOKEN || '',
@@ -42,5 +60,5 @@ export const env = {
   androidRepo: process.env.VERSION_SERVER_ANDROID_REPO || 'bulwarkmail/native',
   // Polled more often than the webmail releases so a new APK is served soon
   // after it is attached. 10 minutes = 6 req/h, well inside the anonymous limit.
-  androidRefreshIntervalMs: num('VERSION_SERVER_ANDROID_REFRESH_MS', 10 * 60 * 1000),
+  androidRefreshIntervalMs: interval('VERSION_SERVER_ANDROID_REFRESH_MS', 10 * 60 * 1000),
 };

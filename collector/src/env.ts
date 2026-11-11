@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function loadDotenv(file: string): void {
   if (!fs.existsSync(file)) return;
@@ -16,8 +17,11 @@ function loadDotenv(file: string): void {
   }
 }
 
-const here = path.dirname(new URL(import.meta.url).pathname);
-loadDotenv(path.resolve(here, '..', '..', '.env'));
+const here = path.dirname(fileURLToPath(import.meta.url));
+// The collector's own variables are in collector/.env (deploy.sh writes it with nothing else). The
+// stack's .env, which also holds the other services' secrets, is read only when that file is missing.
+const own = path.resolve(here, '..', '.env');
+loadDotenv(fs.existsSync(own) ? own : path.resolve(here, '..', '..', '.env'));
 
 function required(name: string): string {
   const v = process.env[name];
@@ -30,6 +34,30 @@ function num(name: string, fallback: number): number {
   if (!v) return fallback;
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/** The longest delay a Node timer holds; setTimeout and setInterval run anything longer after 1 ms. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+/** The largest file size a tar header states; the unpack step counts entries from those headers. */
+const MAX_UNPACK_BYTES = 8 * 1024 ** 3;
+
+// The same line format as log.ts; env.ts is loaded first and imports nothing of the collector.
+function warn(msg: string, fields: Record<string, unknown>): void {
+  process.stdout.write(`${JSON.stringify({ ts: new Date().toISOString(), level: 'warn', msg, ...fields })}\n`);
+}
+
+/**
+ * A limit or interval from the environment: a positive number up to `max`. Any other value that is
+ * set (0, a negative number, a blank value, text, more than the timer or the counter holds) gives
+ * `fallback`, with one log line naming the setting and the value used. No value switches a limit off.
+ */
+function limit(name: string, fallback: number, max: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const n = raw.trim() === '' ? NaN : Number(raw);
+  if (Number.isFinite(n) && n > 0 && n <= max) return n;
+  warn('collector.setting_ignored', { setting: name, given: raw.slice(0, 40), used: fallback });
+  return fallback;
 }
 
 // "repo/package,repo/package" — ghcr.io packages whose public page is scraped for pull totals.
@@ -52,13 +80,13 @@ export const env = {
   pgUser: process.env.PG_USER || 'dashboard',
   pgPassword: required('POSTGRES_DASHBOARD_PASSWORD'),
   pgDatabase: process.env.PG_DATABASE || 'dashboard',
-  fastIntervalMs: num('COLLECTOR_INTERVAL_FAST_MS', 15 * 60 * 1000),
-  slowIntervalMs: num('COLLECTOR_INTERVAL_SLOW_MS', 24 * 60 * 60 * 1000),
+  fastIntervalMs: limit('COLLECTOR_INTERVAL_FAST_MS', 15 * 60 * 1000, MAX_TIMER_MS),
+  slowIntervalMs: limit('COLLECTOR_INTERVAL_SLOW_MS', 24 * 60 * 60 * 1000, MAX_TIMER_MS),
   reposDir: process.env.COLLECTOR_REPOS_DIR || '/opt/bulwark-dashboard/data/repos',
   // Limits of one repository's git scan (see git.ts).
-  scanDeadlineMs: num('COLLECTOR_SCAN_DEADLINE_MS', 30 * 60 * 1000),
-  unpackMaxBytes: num('COLLECTOR_UNPACK_MAX_BYTES', 1024 * 1024 * 1024),
-  unpackMaxEntries: num('COLLECTOR_UNPACK_MAX_ENTRIES', 200_000),
+  scanDeadlineMs: limit('COLLECTOR_SCAN_DEADLINE_MS', 30 * 60 * 1000, MAX_TIMER_MS),
+  unpackMaxBytes: limit('COLLECTOR_UNPACK_MAX_BYTES', 1024 * 1024 * 1024, MAX_UNPACK_BYTES),
+  unpackMaxEntries: limit('COLLECTOR_UNPACK_MAX_ENTRIES', 200_000, Number.MAX_SAFE_INTEGER),
   runOnce: process.argv.includes('--once'),
   ghcrPackages: ghcrPackages(
     process.env.GHCR_PACKAGES

@@ -66,20 +66,98 @@ test('a credential the cleaning was not told about, in the forms the old clones 
   }
 });
 
-test('the cleaning does not take much longer per character on long input', () => {
-  // Growth, not time: four times the input takes about 4 times as long for linear rules and about
-  // 16 times for a quadratic one. The fastest of five runs each keeps other test files' load out.
-  for (const unit of ['a.', '-eyJa', 'https:x', 'Basic ']) {
-    const time = (n: number) => {
-      const text = unit.repeat(n);
-      const start = process.hrtime.bigint();
-      errorText(text, [], 200);
-      return Number(process.hrtime.bigint() - start);
+// [name, what comes first, what is repeated]: long runs of the characters the rules start with, and of
+// what makes each rule look ahead (no end of the user part, no colon after "authorization", no second dot ...).
+const SHAPES: Array<[string, string, string]> = [
+  ['a.', '', 'a.'],
+  ['letters', '', 'a'],
+  ['a+ (scheme characters)', '', 'a+'],
+  ['a:', '', 'a:'],
+  ['a://', '', 'a://'],
+  ['one scheme, then no @', 'https://', 'x'],
+  ['one scheme, then dots and no @', 'https://', 'x.'],
+  ['scheme starts every 2 characters, user part never ends', '', 'a.a.a.a.a.a.a.a.a.a.a.a.a.a.://xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx '],
+  ['-----BEGIN ', '', '-----BEGIN '],
+  ['-----BEGIN and no dash after', '-----BEGIN ', 'x'],
+  ['a key block that never ends', '-----BEGIN PRIVATE KEY-----', 'x\n'],
+  ['key header, then -----END that is none', '-----BEGIN PRIVATE KEY-----', '-----END xxxxxxxxxxxxxxxx'],
+  ['key header, then one -----END and no dash', '-----BEGIN PRIVATE KEY----- -----END ', 'x'],
+  ['key header, then dashes', '-----BEGIN PRIVATE KEY-----', '-'],
+  ['authorization', '', 'authorization'],
+  ['authorization and a space', '', 'authorization '],
+  ['authorization, then spaces', 'authorization', ' '],
+  ['authorization, then newlines', 'authorization', '\n'],
+  ['proxy-', '', 'proxy-'],
+  ['authorization: and a long value', 'authorization:', 'x'],
+  ['Basic ', '', 'Basic '],
+  ['basic, then spaces', 'basic', ' '],
+  ['token and 7 characters', '', 'token abcdefg '],
+  ['bearer, then a long value', 'bearer ', 'a'],
+  ['eyJ', '', 'eyJ'],
+  ['-eyJa', '', '-eyJa'],
+  [' eyJaaaa', '', ' eyJaaaa'],
+  ['eyJaaaa., then letters', 'eyJaaaa.', 'a'],
+  [' eyJaaaa.aaaa', '', ' eyJaaaa.aaaa'],
+  ['at signs', '', '@'],
+  ['dashes', '', '-'],
+  ['spaces', '', ' '],
+  ['the secret itself', '', `${TOKEN} `],
+  ['the secret\'s start, again and again', '', TOKEN.slice(0, 20)],
+];
+
+test('the cleaning reads each character a bounded number of times: four times the input, about four times the reads', () => {
+  // Counted character reads, not time: a rule that looks at every character a bounded number of times
+  // reads about 4 times as much for 4 times the input; a rule that starts over at every character
+  // reads about 16 times as much.
+  const rows: string[] = [];
+  for (const [what, head, unit] of SHAPES) {
+    const reads = (chars: number) => {
+      const counter = { count: 0 };
+      errorText(head + unit.repeat(Math.ceil(chars / unit.length)), [TOKEN, basic(TOKEN)], 300, counter);
+      return counter.count;
     };
-    const fastest = (n: number) => Math.min(...Array.from({ length: 5 }, () => time(n)));
-    time(2000);
-    const small = fastest(20000);
-    const large = fastest(80000);
-    assert.ok(large / small < 10, `${JSON.stringify(unit)}: 4 times the input took ${(large / small).toFixed(1)} times as long`);
+    const small = reads(1 << 14);
+    const large = reads(1 << 16);
+    rows.push(`${what}: ${(large / small).toFixed(2)}`);
+    assert.ok(large / small < 5, `${what}: 4 times the input took ${(large / small).toFixed(2)} times the reads`);
+    // And a bounded number per character: the secrets are at most 70 characters long.
+    assert.ok(large < 120 * (1 << 16), `${what}: ${large} reads for ${1 << 16} characters`);
+  }
+  console.log(`# reads for 64 KB / 16 KB\n# ${rows.join('\n# ')}`);
+});
+
+// The rules as regular expressions: what the cleaning did before it counted its reads, kept here to
+// check that the passes replace exactly the same text.
+function byExpressions(text: string, secrets: readonly string[]): string {
+  for (const secret of secrets) if (secret) text = text.split(secret).join('<redacted>');
+  return text
+    .replace(/-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-\r\n]*PRIVATE KEY-----|$)/g, '<redacted key>')
+    .replace(/\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@'"]*@/gi, '$1')
+    .replace(/\b((?:proxy-)?authorization["']?\s*[:=]\s*["']?)[^\r\n"']*/gi, '$1<redacted>')
+    .replace(/\b(bearer|basic|token)(\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1$2<redacted>')
+    .replace(/(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*/g, '<redacted jwt>');
+}
+
+test('the counted passes replace exactly what the regular expressions replaced', () => {
+  // Texts built from the pieces the rules look for, with a fixed seed so a failure can be repeated.
+  const pieces = [
+    'a', 'b', 'x', 'Z', '0', '7', '.', '-', '_', '+', '~', '/', '=', ':', '//', '://', '@', "'", '"', ' ', '\t', '\n', '\r',
+    '\u00a0', '\u2028', 'é', '<', 'https', 'HTTP', 'git+ssh', 'x-access-token', 'authorization', 'Authorization',
+    'AUTHORIZATION', 'proxy-', 'Proxy-', 'bearer', 'Bearer', 'basic', 'BASIC', 'token', 'Token', 'abcdefgh', 'eyJ',
+    'eyJabcd', '.efgh', '-----', '-----BEGIN ', 'RSA ', 'PRIVATE KEY', 'PRIVATE KEY-----', '-----END ', TOKEN.slice(0, 12), TOKEN,
+    'eyJhbGciOiJ.', 'Ab0_-x.', '.Ab0_', 'user:pw@', 'h://', 'ftp://u@',
+  ];
+  let seed = 20261112;
+  const random = (n: number) => {
+    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+    return (seed >>> 8) % n;
+  };
+  for (let round = 0; round < 20000; round++) {
+    let text = '';
+    const count = random(40);
+    for (let i = 0; i < count; i++) text += pieces[random(pieces.length)];
+    const secrets = round % 3 === 0 ? [TOKEN, basic(TOKEN)] : [];
+    const expected = byExpressions(text, secrets);
+    assert.equal(errorText(text, secrets, 1e9), expected, `round ${round}: ${JSON.stringify(text)}`);
   }
 });

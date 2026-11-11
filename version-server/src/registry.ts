@@ -38,10 +38,17 @@ const OVERRIDES_PATH = path.resolve(
 
 const SEVERITIES: ReadonlySet<string> = new Set<Severity>(['normal', 'security', 'deprecated']);
 const GHSA_ID = /^GHSA(-[0-9a-z]{4}){3}$/;
+// The keys the file may hold; any other key (a misspelt one) makes it invalid.
+const FILE_KEYS: ReadonlySet<string> = new Set(['_doc', 'minimumSupported', 'severities']);
+const ENTRY_KEYS: ReadonlySet<string> = new Set(['severity', 'advisory']);
+
+type OverridesProblem = 'missing' | 'unreadable' | 'invalid';
 
 let current: Registry = empty();
 // The last overrides that were valid; null until the first file was read.
 let overrides: Overrides | null = null;
+// Why the overrides in use are not the file's current content; null when they are.
+let overridesProblem: OverridesProblem | null = null;
 
 function empty(): Registry {
   return {
@@ -58,13 +65,16 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * Turns the text of overrides.json into overrides. Throws with the reason when the text is no JSON
- * object, `minimumSupported` is no version, or an entry is malformed: its key is no version, its
- * severity not one of normal, security, deprecated, or its advisory no comma-separated list of
- * GHSA ids.
+ * object, it holds a key other than `_doc`, `minimumSupported` and `severities`, `minimumSupported`
+ * is no version, or an entry is malformed: its key is no version, it holds a key other than
+ * `severity` and `advisory`, its severity is not one of normal, security, deprecated, or its
+ * advisory no comma-separated list of GHSA ids.
  */
 export function parseOverrides(text: string): Overrides {
   const parsed: unknown = JSON.parse(text);
   if (!isObject(parsed)) throw new Error('the file holds no JSON object');
+  const unknownKey = Object.keys(parsed).find((key) => !FILE_KEYS.has(key));
+  if (unknownKey !== undefined) throw new Error(`unknown key ${JSON.stringify(unknownKey).slice(0, 40)}`);
   const { minimumSupported, severities } = parsed;
   if (minimumSupported !== undefined && (typeof minimumSupported !== 'string' || !parse(normalize(minimumSupported)))) {
     throw new Error('minimumSupported is not a version');
@@ -75,6 +85,8 @@ export function parseOverrides(text: string): Overrides {
     const at = `severities[${JSON.stringify(version).slice(0, 40)}]`;
     if (!parse(version) || version !== normalize(version)) throw new Error(`${at}: the key is not a version`);
     if (!isObject(entry)) throw new Error(`${at} is not an object`);
+    const unknownEntryKey = Object.keys(entry).find((key) => !ENTRY_KEYS.has(key));
+    if (unknownEntryKey !== undefined) throw new Error(`${at}: unknown key ${JSON.stringify(unknownEntryKey).slice(0, 40)}`);
     if (typeof entry.severity !== 'string' || !SEVERITIES.has(entry.severity)) {
       throw new Error(`${at}.severity is not one of normal, security, deprecated`);
     }
@@ -91,7 +103,7 @@ export function parseOverrides(text: string): Overrides {
   };
 }
 
-function keepPrevious(problem: 'missing' | 'unreadable' | 'invalid', reason: string, previous: Overrides | null): Overrides {
+function keepPrevious(problem: OverridesProblem, reason: string, previous: Overrides | null): Overrides {
   log.error(`overrides.${problem}`, {
     path: OVERRIDES_PATH,
     err: reason,
@@ -125,14 +137,17 @@ function readOverridesFile(): string | null {
   }
 }
 
-function loadOverrides(read: () => string | null, previous: Overrides | null): Overrides {
+/** The overrides to use, and why they are not the file's current content (null when they are). */
+function loadOverrides(read: () => string | null, previous: Overrides | null): { used: Overrides; problem: OverridesProblem | null } {
   let text: string | null;
   try {
     text = read();
   } catch (err) {
-    return keepPrevious('unreadable', err instanceof Error ? err.message : String(err), previous);
+    return { used: keepPrevious('unreadable', err instanceof Error ? err.message : String(err), previous), problem: 'unreadable' };
   }
-  return nextOverrides(text, previous);
+  const used = nextOverrides(text, previous);
+  // parseOverrides() always returns a new object, so getting `previous` back means the file was not taken.
+  return { used, problem: used === previous ? (text === null ? 'missing' : 'invalid') : null };
 }
 
 export interface GithubRelease {
@@ -172,8 +187,9 @@ export interface RefreshSources {
 export async function refresh(sources: RefreshSources = {}): Promise<void> {
   const { releases: getReleases = fetchReleases, overridesText = readOverridesFile } = sources;
   // Read before GitHub is asked, so a broken file stops the start even when GitHub is down.
-  const used = loadOverrides(overridesText, overrides);
+  const { used, problem } = loadOverrides(overridesText, overrides);
   overrides = used;
+  overridesProblem = problem;
   const sevMap = used.severities;
 
   let releases: GithubRelease[];
@@ -378,11 +394,21 @@ export function lookup(currentRaw: string): LookupResult {
   };
 }
 
-export function snapshot(): { fetchedAt: string; latest: string | null; minimumSupported: string | null; count: number } {
+/**
+ * What /health shows. `overridesStale` is true while the overrides in use are not overrides.json's
+ * current content, and `overridesProblem` says why (missing, unreadable, invalid); the details are
+ * in the log, never the file's content.
+ */
+export function snapshot(): {
+  fetchedAt: string; latest: string | null; minimumSupported: string | null; count: number;
+  overridesStale: boolean; overridesProblem: OverridesProblem | null;
+} {
   return {
     fetchedAt: current.fetchedAt,
     latest: current.latest,
     minimumSupported: current.minimumSupported,
     count: current.entries.size,
+    overridesStale: overridesProblem !== null,
+    overridesProblem,
   };
 }

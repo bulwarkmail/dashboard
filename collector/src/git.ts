@@ -355,12 +355,21 @@ async function unpack(gitDir: string, ref: string, dest: string, signal: AbortSi
   if (failures.length) throw new Error(failures.join('; '));
 }
 
+// The unpacked tree is walked with paths as bytes: a file or folder name that is no UTF-8 can still
+// be opened, as `find` and `wc` open it.
+const SEP = Buffer.from(path.sep);
+
+/** The entries of a folder, with names as bytes. */
+function entries(dir: Buffer) {
+  return fs.readdir(dir, { withFileTypes: true, encoding: 'buffer' });
+}
+
 /** Newlines in the regular files under `dir`. Symlinks are neither followed nor counted. */
-async function countLines(dir: string, signal: AbortSignal): Promise<number> {
+async function countLines(dir: Buffer, signal: AbortSignal): Promise<number> {
   let total = 0;
-  for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+  for (const e of await entries(dir)) {
     if (signal.aborted) throw new Error('stopped');
-    const full = path.join(dir, e.name);
+    const full = Buffer.concat([dir, SEP, e.name]);
     if (e.isDirectory()) total += await countLines(full, signal);
     else if (e.isFile()) {
       try {
@@ -390,18 +399,17 @@ async function locByLanguage(gitDir: string, ref: string, signal: AbortSignal): 
       'LICENSE', 'LICENSE.txt', 'LICENSE.md', 'COPYING', 'COPYING.txt',
     ]);
     let stripped = 0;
-    async function walk(dir: string): Promise<void> {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
-      for (const e of entries) {
-        const full = path.join(dir, e.name);
+    async function walk(dir: Buffer): Promise<void> {
+      for (const e of await entries(dir)) {
+        const full = Buffer.concat([dir, SEP, e.name]);
         if (e.isDirectory()) await walk(full);
-        else if (e.isFile() && stripNames.has(e.name)) {
+        else if (e.isFile() && stripNames.has(e.name.toString())) {
           await fs.rm(full, { force: true });
           stripped++;
         }
       }
     }
-    await walk(tmp).catch(() => undefined);
+    await walk(Buffer.from(tmp)).catch(() => undefined);
     log.info('git.loc.strip', { repo: gitDir, stripped });
     try {
       const stdout = await run('scc', ['--no-cocomo', '--no-complexity', '--format', 'json', tmp], 'scc', signal, {
@@ -421,7 +429,7 @@ async function locByLanguage(gitDir: string, ref: string, signal: AbortSignal): 
     } catch (e) {
       if (signal.aborted) throw e;
       // Fallback: total lines under all tracked files, language=ALL.
-      const total = await countLines(tmp, signal).catch((err: unknown) => {
+      const total = await countLines(Buffer.from(tmp), signal).catch((err: unknown) => {
         if (signal.aborted) throw err;
         return 0;
       });

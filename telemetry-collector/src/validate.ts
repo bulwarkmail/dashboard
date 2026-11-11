@@ -10,10 +10,14 @@
 // https://bulwarkmail.org/docs/legal/privacy/telemetry
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// A release version: three numbers of at most 4 digits (the panels sort by
-// them as integers), an optional prerelease and build part, 64 characters in
-// all. Released builds send `1.21.1`, `1.21.0-beta.2`, `1.20.0+desktop.<sha>`.
-const VERSION_RE = /^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[\w.-]+)?(?:\+[\w.-]+)?$/;
+// A Bulwark version: three numbers of at most 4 digits (the panels sort by
+// them as integers), optionally a beta number, the only prerelease the
+// project tags (webmail 1.11.0-beta.3, desktop 0.1.0-beta.57), and optionally
+// the desktop app's mark on error counts (+desktop, or +desktop.<commit>).
+// No other text, so nothing a sender writes shows in the version tables.
+const VERSION_RE = /^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-beta\.[0-9]{1,4})?(?:\+desktop(?:\.[0-9a-f]{7,40})?)?$/;
+// Node's and Stalwart's versions, which use prerelease words of their own.
+const OTHER_VERSION_RE = /^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[0-9A-Za-z]{1,12}(?:\.[0-9A-Za-z]{1,12})?)?$/;
 const MAX_VERSION_LENGTH = 64;
 const SHORT_TEXT_RE = /^[\w.+-]{1,64}$/;
 
@@ -99,8 +103,18 @@ function str(value: unknown, re?: RegExp): string | null {
   return value;
 }
 
-function version(value: unknown): string | null {
-  return typeof value === 'string' && value.length <= MAX_VERSION_LENGTH ? str(value, VERSION_RE) : null;
+function version(value: unknown, re = VERSION_RE): string | null {
+  return typeof value === 'string' && value.length <= MAX_VERSION_LENGTH ? str(value, re) : null;
+}
+
+/**
+ * Whether a request says its body is JSON. Instances always send
+ * `content-type: application/json`; a web page can only make a browser send
+ * that after a preflight the collector doesn't answer, so pages can't make
+ * their visitors post heartbeats.
+ */
+export function isJsonRequest(contentType: string | undefined): boolean {
+  return (contentType ?? '').split(';')[0].trim().toLowerCase() === 'application/json';
 }
 
 function utcDay(ms: number): string {
@@ -175,9 +189,9 @@ function v1Fields(o: Record<string, unknown>, now: number): Omit<CleanHeartbeat,
     version: release,
     build: str(o.build, SHORT_TEXT_RE),
     platform,
-    node_version: version(o.node_version),
+    node_version: version(o.node_version, OTHER_VERSION_RE),
     os_family,
-    stalwart_version: version(o.stalwart_version),
+    stalwart_version: version(o.stalwart_version, OTHER_VERSION_RE),
     features,
     counts: {
       accounts: accBucket,

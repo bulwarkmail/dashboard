@@ -30,6 +30,8 @@ function mockDb(t: import('node:test').TestContext, claimed: (params: unknown[])
     if (sql.startsWith('INSERT INTO error_instant_forwards')) {
       return claimed(params) ? { rows: [{ ok: 1 }], rowCount: 1 } : { rows: [], rowCount: 0 };
     }
+    // The instance still has its share of the day's forwards.
+    if (sql.includes('INSERT INTO error_forward_senders')) return { rows: [{ instance_id: INSTANCE }], rowCount: 1 };
     return { rows: [], rowCount: 0 };
   };
   t.mock.method(pool, 'query', record);
@@ -172,6 +174,7 @@ test('instant forwards count against the day\'s 100 groups for Bugsink', async (
     calls.push(sql);
     if (sql.includes(' AS sent')) return { rows: [{ sent: String(sentToday) }], rowCount: 1 };
     if (sql.startsWith('INSERT INTO error_instant_forwards')) return { rows: [{ ok: 1 }], rowCount: 1 };
+    if (sql.includes('INSERT INTO error_forward_senders')) return { rows: [{ instance_id: INSTANCE }], rowCount: 1 };
     return { rows: [], rowCount: 0 };
   };
   t.mock.method(pool, 'query', record);
@@ -183,4 +186,31 @@ test('instant forwards count against the day\'s 100 groups for Bugsink', async (
   assert.equal((await forwardInstant(validateErrorBatch({ ...batch, errors: two }, NOW)!, NOW + 61_000)).forwarded, 0);
   assert.equal(calls.some((c) => c.startsWith('INSERT INTO error_instant_forwards')), false);
   assert.equal(fetchMock.mock.callCount(), 1);
+});
+
+test('one instance\'s instant batches bring in at most its share of the day\'s forwards', async (t) => {
+  resetInstantForTests();
+  env.bugsinkTelemetryDsn = DSN;
+  let charged = 0;
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  const record = async (text: string, params: unknown[] = []) => {
+    const sql = text.replace(/\s+/g, ' ').trim();
+    calls.push({ sql, params });
+    if (sql.includes(' AS sent')) return { rows: [{ sent: '0' }], rowCount: 1 };
+    if (sql.startsWith('INSERT INTO error_instant_forwards')) return { rows: [{ ok: 1 }], rowCount: 1 };
+    if (sql.includes('INSERT INTO error_forward_senders')) {
+      if (charged >= (params[2] as number)) return { rows: [], rowCount: 0 };
+      charged++;
+      return { rows: [{ instance_id: INSTANCE }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  };
+  t.mock.method(pool, 'query', record);
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 200 }));
+  const twenty = Array.from({ length: 20 }, (_, i) => ({ ...error, fingerprint: i.toString(16).padStart(16, '0') }));
+  assert.equal((await forwardInstant(validateErrorBatch({ ...batch, errors: twenty }, NOW)!, NOW)).forwarded, 10);
+  assert.equal(fetchMock.mock.callCount(), 10);
+  // The claim of the one it couldn't charge is given back, for another instance or the daily forward.
+  assert.equal(calls.filter((c) => c.sql.startsWith('DELETE FROM error_instant_forwards')).length, 1);
+  assert.deepEqual(calls.find((c) => c.sql.includes('INSERT INTO error_forward_senders'))!.params[1], [INSTANCE]);
 });

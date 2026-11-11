@@ -37,11 +37,25 @@ CREATE TABLE IF NOT EXISTS expired_instances (
 
 -- Heartbeats per UTC day (the day they arrived) from instance ids the
 -- collector had not seen before. Those of the first
--- TELEMETRY_MAX_NEW_INSTANCES_PER_DAY are stored, the count goes on past
--- that. Only a count, no instance_id.
+-- TELEMETRY_MAX_NEW_INSTANCES_PER_DAY are stored, the next
+-- TELEMETRY_MAX_DEFERRED_PER_DAY are deferred, the count goes on past that.
+-- `promoted`: deferred ids counted that day (pending.ts). Only counts, no
+-- instance_id.
 CREATE TABLE IF NOT EXISTS new_instance_counts (
   day    date PRIMARY KEY,
   count  integer NOT NULL
+);
+ALTER TABLE new_instance_counts ADD COLUMN IF NOT EXISTS promoted integer NOT NULL DEFAULT 0;
+
+-- Heartbeats of new ids past the day's limit, held until pending.ts counts
+-- them (one row per instance and day, the validated heartbeat with its error
+-- counts). Deleted after the retention window like heartbeats.
+CREATE TABLE IF NOT EXISTS pending_heartbeats (
+  instance_id        uuid        NOT NULL,
+  day                date        NOT NULL,
+  heartbeat          jsonb       NOT NULL,
+  first_received_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (instance_id, day)
 );
 
 CREATE TABLE IF NOT EXISTS daily_rollups (
@@ -93,6 +107,17 @@ CREATE TABLE IF NOT EXISTS error_instant_forwards (
   version       text        NOT NULL,
   forwarded_at  timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (day, fingerprint, version)
+);
+
+-- How many groups each reporting instance brought to Bugsink per UTC day of
+-- forwarding (TELEMETRY_MAX_FORWARDS_PER_INSTANCE_PER_DAY). Deleted after the
+-- retention window like error_counts; the instance id never leaves this
+-- database.
+CREATE TABLE IF NOT EXISTS error_forward_senders (
+  day          date    NOT NULL,
+  instance_id  uuid    NOT NULL,
+  count        integer NOT NULL,
+  PRIMARY KEY (day, instance_id)
 );
 
 CREATE TABLE IF NOT EXISTS collector_runs (

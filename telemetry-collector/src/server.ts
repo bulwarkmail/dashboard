@@ -2,10 +2,11 @@ import http from 'node:http';
 import { env } from './env.js';
 import { log } from './log.js';
 import { migrate, pool } from './db.js';
-import { validate, validateErrorBatch } from './validate.js';
+import { isJsonRequest, validate, validateErrorBatch } from './validate.js';
 import { runRollup } from './rollup.js';
-import { storeHeartbeat } from './heartbeat.js';
+import { isKnownInstance, storeHeartbeat } from './heartbeat.js';
 import { runForward } from './forward.js';
+import { promotePending } from './pending.js';
 import { INSTANCE_INTERVAL_MS, InstanceLimiter, forwardInstant, storeInstantErrors } from './instant.js';
 
 const instanceLimiter = new InstanceLimiter(INSTANCE_INTERVAL_MS);
@@ -59,6 +60,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true });
     }
 
+    if (method === 'POST' && (path === '/v1/heartbeat' || path === '/v1/errors') && !isJsonRequest(req.headers['content-type'])) {
+      req.resume();
+      return send(res, 415, { ok: false });
+    }
+
     if (method === 'POST' && path === '/v1/heartbeat') {
       const { body, bytes } = await readJson(req);
       const clean = validate(body);
@@ -66,7 +72,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 400, { ok: false });
       }
       if (clean.schema === '1' && bytes > MAX_V1_BODY_BYTES) return send(res, 413, { ok: false });
-      // Answered alike when it was dropped (a new id past the day's limit).
+      // Answered alike when it was deferred or dropped (a new id past the day's limit).
       await storeHeartbeat(clean);
       return send(res, 200, { ok: true });
     }
@@ -76,6 +82,9 @@ const server = http.createServer(async (req, res) => {
       const clean = validateErrorBatch(body);
       if (!clean) return send(res, 400, { ok: false });
       if (!instanceLimiter.allow(clean.instance_id)) return send(res, 429, { ok: false });
+      // Only an instance whose heartbeat was stored sends error counts; any
+      // other id is answered alike and nothing is kept.
+      if (!(await isKnownInstance(clean.instance_id))) return send(res, 200, { ok: true });
       await storeInstantErrors(clean);
       send(res, 200, { ok: true });
       // After the answer: Bugsink being slow or down never holds up an instance.
@@ -110,6 +119,10 @@ async function main(): Promise<void> {
 
   // Ids whose interval is over leave the /v1/errors limiter here, not on a request.
   setInterval(() => instanceLimiter.prune(), INSTANCE_INTERVAL_MS);
+
+  // Count deferred heartbeats of new ids into each day's budget (pending.ts).
+  void promotePending();
+  setInterval(() => { void promotePending(); }, 60 * 60 * 1000);
 
   const shutdown = async (sig: string): Promise<void> => {
     log.info('shutting down', { sig });

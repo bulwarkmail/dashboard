@@ -31,6 +31,8 @@ export interface ErrorGroup {
   instances: number;
   buckets: string[];
   max_days: number;
+  /** The reporting instances (daily forward only); never part of the event. */
+  reporters?: string[];
 }
 
 interface Dsn { url: string }
@@ -124,8 +126,42 @@ export async function forwardBudget(now = Date.now()): Promise<number> {
 }
 
 /**
+ * Charge one forward to a reporting instance: the one with the fewest
+ * forwards today, if any of them is under `maxForwardsPerInstancePerDay`.
+ * Returns the instance charged, or null when all of them used their share.
+ */
+export async function chargeReporter(reporters: string[], now = Date.now()): Promise<string | null> {
+  const { rows } = await pool.query<{ instance_id: string }>(
+    `WITH pick AS (
+       SELECT r.id AS instance_id
+         FROM unnest($2::uuid[]) AS r(id)
+         LEFT JOIN error_forward_senders s ON s.day = $1 AND s.instance_id = r.id
+        WHERE coalesce(s.count, 0) < $3
+        ORDER BY coalesce(s.count, 0), r.id
+        LIMIT 1
+     )
+     INSERT INTO error_forward_senders (day, instance_id, count)
+     SELECT $1, instance_id, 1 FROM pick
+     ON CONFLICT (day, instance_id) DO UPDATE SET count = error_forward_senders.count + 1
+     RETURNING instance_id`,
+    [new Date(now).toISOString().slice(0, 10), reporters, env.maxForwardsPerInstancePerDay],
+  );
+  return rows[0]?.instance_id ?? null;
+}
+
+/** Give a charge back after a send failed. */
+export async function refundReporter(instanceId: string, now = Date.now()): Promise<void> {
+  await pool.query(
+    'UPDATE error_forward_senders SET count = count - 1 WHERE day = $1 AND instance_id = $2 AND count > 0',
+    [new Date(now).toISOString().slice(0, 10), instanceId],
+  );
+}
+
+/**
  * Forward the complete groups not forwarded yet, as many as today's budget
- * allows; the rest wait for a later run. Never throws.
+ * allows: groups more instances reported first, each charged to one of its
+ * reporting instances, so one instance brings in at most its share. The rest
+ * wait for a later run. Never throws.
  */
 export async function runForward(now = Date.now()): Promise<{ forwarded: number; failed: number }> {
   const result = { forwarded: 0, failed: 0 };
@@ -141,24 +177,35 @@ export async function runForward(now = Date.now()): Promise<{ forwarded: number;
       log.info('forward.daily_limit', { max: env.maxForwardedGroupsPerDay });
       return result;
     }
+    // Groups none of whose reporters has a share left today are not read at
+    // all, so they can't fill the batch ahead of the others.
     const groups = await pool.query<ErrorGroup>(
-      `SELECT to_char(ec.day, 'YYYY-MM-DD') AS day, ec.fingerprint, ec.version,
-              min(ec.name) AS name,
-              (array_agg(ec.frames ORDER BY jsonb_array_length(ec.frames) DESC))[1] AS frames,
-              min(ec.message) AS message,
-              count(DISTINCT ec.instance_id)::int AS instances,
-              array_agg(ec.count_bucket) AS buckets,
-              max(ec.days)::int AS max_days
-         FROM error_counts ec
-        WHERE ec.day <= $1
-          AND NOT EXISTS (SELECT 1 FROM error_forwards f
-                           WHERE f.day = ec.day AND f.fingerprint = ec.fingerprint AND f.version = ec.version)
-        GROUP BY ec.day, ec.fingerprint, ec.version
-        ORDER BY ec.day, ec.fingerprint, ec.version
-        LIMIT $2`,
-      [lastCompleteDay(now), Math.min(BATCH, budget)],
+      `SELECT g.* FROM (
+         SELECT to_char(ec.day, 'YYYY-MM-DD') AS day, ec.fingerprint, ec.version,
+                min(ec.name) AS name,
+                (array_agg(ec.frames ORDER BY jsonb_array_length(ec.frames) DESC))[1] AS frames,
+                min(ec.message) AS message,
+                count(DISTINCT ec.instance_id)::int AS instances,
+                array_agg(ec.count_bucket) AS buckets,
+                max(ec.days)::int AS max_days,
+                array_agg(DISTINCT ec.instance_id::text) AS reporters
+           FROM error_counts ec
+          WHERE ec.day <= $1
+            AND NOT EXISTS (SELECT 1 FROM error_forwards f
+                             WHERE f.day = ec.day AND f.fingerprint = ec.fingerprint AND f.version = ec.version)
+          GROUP BY ec.day, ec.fingerprint, ec.version
+       ) g
+       WHERE EXISTS (SELECT 1 FROM unnest(g.reporters::uuid[]) AS r(id)
+                       LEFT JOIN error_forward_senders s ON s.day = $3 AND s.instance_id = r.id
+                      WHERE coalesce(s.count, 0) < $4)
+       ORDER BY g.instances DESC, g.day, g.fingerprint, g.version
+       LIMIT $2`,
+      [lastCompleteDay(now), BATCH, new Date(now).toISOString().slice(0, 10), env.maxForwardsPerInstancePerDay],
     );
     for (const group of groups.rows) {
+      if (result.forwarded >= budget) break;
+      const reporter = await chargeReporter(group.reporters ?? [], now);
+      if (!reporter) continue;
       let ok = false;
       try {
         const res = await fetch(target.url, {
@@ -175,6 +222,7 @@ export async function runForward(now = Date.now()): Promise<{ forwarded: number;
       }
       if (!ok) {
         // Try again on the next run; stop this one, the tracker is likely down.
+        await refundReporter(reporter, now);
         result.failed++;
         break;
       }

@@ -1,8 +1,9 @@
 // POST /v1/heartbeat takes no credential, so what one caller can make of it has to be bounded by the
 // collector and by nginx. Real instances keep working: they send the current time and a release version.
 //
-// The last test needs a real Postgres and is skipped unless ROLLUP_TEST_PG=1 (the same switch and
-// setup as rollup-late-heartbeats.test.ts).
+// The last tests need a real Postgres and are skipped unless ROLLUP_TEST_PG=1 (the same switch and
+// setup as rollup-late-heartbeats.test.ts). Run this file on its own then: the Postgres-backed test
+// files share one database and empty its tables.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -14,7 +15,8 @@ const { pool, migrate } = await import('./db.js');
 const { env } = await import('./env.js');
 const { log } = await import('./log.js');
 const { storeHeartbeat } = await import('./heartbeat.js');
-const { validate, validateErrorBatch } = await import('./validate.js');
+const { promotePending } = await import('./pending.js');
+const { isJsonRequest, validate, validateErrorBatch } = await import('./validate.js');
 
 const v1 = {
   schema: '1',
@@ -112,21 +114,25 @@ test('a schema 2 heartbeat for yesterday puts its error counts on the day before
 });
 
 test('a version is a release number, not a text field', () => {
-  // What instances send.
-  for (const version of ['1.21.1', '1.21.0-beta.2', '0.1.92', '1.20.0+desktop.abc1234', '1.11.0-pre.3', '10.200.3000', '9999.9999.9999', `1.0.0-${'a'.repeat(58)}`]) {
+  // What instances send: webmail releases and betas, the desktop app's betas, its mark on error counts.
+  for (const version of ['1.21.1', '1.21.0-beta.2', '1.11.0-beta.3', '0.1.0-beta.57', '0.1.92', '0.3.0-beta.1+desktop', '1.20.0+desktop', '1.20.0+desktop.abc1234', '10.200.3000', '9999.9999.9999']) {
     assert.equal(validate({ ...v1, version })?.version, version);
   }
   // A number part that doesn't fit an integer breaks every panel that sorts by version.
   for (const version of ['99999999999.0.0', '1.99999999999.0', '1.0.99999999999', '2147483648.0.0', '12345.0.0']) {
     assert.equal(validate({ ...v1, version }), null, version);
   }
-  // Free text in the public version table.
-  assert.equal(validate({ ...v1, version: '999.0.0-BULWARK.IS.NOT.SAFE.see.evil-site.example.and.more.text.to.fill.the.public.table' }), null);
-  assert.equal(validate({ ...v1, version: `1.0.0-${'a'.repeat(100)}` }), null);
-  assert.equal(validate({ ...v1, version: `1.0.0+${'a'.repeat(100)}` }), null);
-  // 64 characters in all: a 60-character prerelease or build part is too long.
-  assert.equal(validate({ ...v1, version: `1.0.0-${'a'.repeat(60)}` }), null);
-  assert.equal(validate({ ...v1, version: `1.0.0+${'a'.repeat(60)}` }), null);
+  // Free text in the public version table: any prerelease or build part the project doesn't use.
+  for (const version of [
+    '999.0.0-BULWARK.IS.NOT.SAFE.see.evil-site.example',
+    '1.0.0-see_evil-site.example_for_the_fix',
+    '909.0.0-INVENTED.TEXT.see.some-site.example',
+    '1.11.0-pre.3', '1.20.0-rc.2', '1.0.0-alpha.1', '1.0.0-beta', '1.0.0-beta.1.2', '1.0.0-beta.x',
+    '1.0.0+build', '1.0.0+desktop.not-hex', '1.0.0+desktop.ABCDEF1', '1.0.0+desktop+desktop',
+    `1.0.0-${'a'.repeat(58)}`, `1.0.0-${'a'.repeat(100)}`, `1.0.0+${'a'.repeat(100)}`,
+  ]) {
+    assert.equal(validate({ ...v1, version }), null, version);
+  }
 });
 
 test('the same bounds hold for the versions inside error counts', () => {
@@ -134,8 +140,18 @@ test('the same bounds hold for the versions inside error counts', () => {
   assert.equal(validate({ ...v1, schema: '2', errors: [bad] }), null);
   assert.equal(validateErrorBatch({ schema: '1', instance_id: v1.instance_id, day: utcDay(), errors: [bad] }), null);
   assert.equal(validateErrorBatch({ schema: '1', instance_id: v1.instance_id, day: utcDay(), errors: [{ ...error, version: `1.0.0-${'a'.repeat(60)}` }] }), null);
+  assert.equal(validateErrorBatch({ schema: '1', instance_id: v1.instance_id, day: utcDay(), errors: [{ ...error, version: '1.0.0-INVENTED.TEXT' }] }), null);
   // And an honest one still passes.
   assert.ok(validate({ ...v1, schema: '2', errors: [error] }));
+  assert.ok(validateErrorBatch({ schema: '1', instance_id: v1.instance_id, day: utcDay(), errors: [{ ...error, version: '0.1.0-beta.57+desktop' }] }));
+});
+
+test('only a request that says its body is JSON is read', () => {
+  for (const type of ['application/json', 'application/json; charset=utf-8', 'Application/JSON']) assert.equal(isJsonRequest(type), true, type);
+  // What a page can make a browser send without asking the collector first.
+  for (const type of [undefined, '', 'text/plain', 'text/plain;charset=UTF-8', 'application/x-www-form-urlencoded', 'multipart/form-data; boundary=x']) {
+    assert.equal(isJsonRequest(type), false, String(type));
+  }
 });
 
 test('an error batch names today or yesterday, not a day of the caller\'s choice', () => {
@@ -145,7 +161,7 @@ test('an error batch names today or yesterday, not a day of the caller\'s choice
   assert.ok(validateErrorBatch({ schema: '1', instance_id: v1.instance_id, day: utcDay(), errors: [error] }));
 });
 
-test('past 500 new instance ids a day, a new id is answered and not stored, and a known id still is', async (t) => {
+test('past 500 new instance ids a day, a new id\'s heartbeat is deferred, past 5500 dropped, and a known id is stored', async (t) => {
   const NOW = Date.parse('2026-11-10T12:00:00Z');
   // What Postgres answers to the admission query: a count for a new id, nothing for a known one.
   let newIdsToday = 500;
@@ -166,18 +182,30 @@ test('past 500 new instance ids a day, a new id is answered and not stored, and 
   const warn = t.mock.method(log, 'warn', () => {});
   const heartbeat = (instance_id: string) => validate({ ...v1, instance_id, ts: new Date(NOW).toISOString() }, NOW)!;
   const stored = () => calls.filter((c) => c.sql.startsWith('INSERT INTO heartbeats')).length;
+  const deferred = () => calls.filter((c) => c.sql.startsWith('INSERT INTO pending_heartbeats'));
 
-  assert.equal(await storeHeartbeat(heartbeat('00000000-0000-4000-8000-000000000501'), NOW), false, 'the 501st new id of the day was stored');
-  assert.equal(await storeHeartbeat(heartbeat('00000000-0000-4000-8000-000000000502'), NOW), false);
+  assert.equal(await storeHeartbeat(heartbeat('00000000-0000-4000-8000-000000000501'), NOW), 'deferred', 'the 501st new id of the day was stored at once');
+  assert.equal(await storeHeartbeat(heartbeat('00000000-0000-4000-8000-000000000502'), NOW), 'deferred');
   assert.equal(stored(), 0);
+  // Kept whole for later, under the heartbeat's day.
+  assert.equal(deferred().length, 2);
+  assert.deepEqual(deferred()[0].params.slice(0, 2), ['00000000-0000-4000-8000-000000000501', '2026-11-10']);
+  assert.equal(JSON.parse(deferred()[0].params[2] as string).instance_id, '00000000-0000-4000-8000-000000000501');
   // One warning a day, not one per heartbeat.
   assert.equal(warn.mock.callCount(), 1);
   // The admission counts by the UTC day the heartbeat arrives.
   assert.equal(calls[0].params[1], '2026-11-10');
   // A known id is always stored.
-  assert.equal(await storeHeartbeat(heartbeat('a0c1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b'), NOW), true);
+  assert.equal(await storeHeartbeat(heartbeat('a0c1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b'), NOW), 'stored');
   assert.equal(stored(), 1);
+  // Past the deferred ones too, a new id is dropped, with one more warning.
+  newIdsToday = 500 + env.maxDeferredPerDay;
+  assert.equal(await storeHeartbeat(heartbeat('00000000-0000-4000-8000-000000005501'), NOW), 'dropped');
+  assert.equal(await storeHeartbeat(heartbeat('00000000-0000-4000-8000-000000005502'), NOW), 'dropped');
+  assert.equal(deferred().length, 2);
+  assert.equal(warn.mock.callCount(), 2);
   assert.equal(env.maxNewInstancesPerDay, 500);
+  assert.equal(env.maxDeferredPerDay, 5000);
 });
 
 test('the telemetry vhost limits how fast one address can post', () => {
@@ -209,23 +237,116 @@ after(async () => {
   if (withPg) await pool.end();
 });
 
-test('with Postgres: only the first new ids of a day are stored, known ids always are', { skip: !withPg && 'set ROLLUP_TEST_PG=1 and point PG_PORT at a throwaway Postgres' }, async (t) => {
+test('with Postgres: only the first new ids of a day are stored at once, known ids always are', { skip: !withPg && 'set ROLLUP_TEST_PG=1 and point PG_PORT at a throwaway Postgres' }, async (t) => {
   await migrate();
-  await pool.query('TRUNCATE heartbeats, instance_meta, new_instance_counts');
+  await pool.query('TRUNCATE heartbeats, instance_meta, new_instance_counts, pending_heartbeats, error_counts');
   const max = env.maxNewInstancesPerDay;
   env.maxNewInstancesPerDay = 3;
   t.after(() => { env.maxNewInstancesPerDay = max; });
   t.mock.method(log, 'warn', () => {});
   const now = Date.now();
   const ids = Array.from({ length: 5 }, () => crypto.randomUUID());
-  const results: boolean[] = [];
+  const results: string[] = [];
   for (const id of ids) results.push(await storeHeartbeat(validate({ ...v1, instance_id: id, ts: new Date(now).toISOString() }, now)!, now));
-  assert.deepEqual(results, [true, true, true, false, false]);
+  assert.deepEqual(results, ['stored', 'stored', 'stored', 'deferred', 'deferred']);
   // The first one again (known now), and a schema 2 heartbeat of a known id.
-  assert.equal(await storeHeartbeat(validate({ ...v1, instance_id: ids[0], ts: new Date(now).toISOString() }, now)!, now), true);
-  assert.equal(await storeHeartbeat(validate({ ...v1, schema: '2', instance_id: ids[1], ts: new Date(now).toISOString(), errors: [error] }, now)!, now), true);
+  assert.equal(await storeHeartbeat(validate({ ...v1, instance_id: ids[0], ts: new Date(now).toISOString() }, now)!, now), 'stored');
+  assert.equal(await storeHeartbeat(validate({ ...v1, schema: '2', instance_id: ids[1], ts: new Date(now).toISOString(), errors: [error] }, now)!, now), 'stored');
   const { rows } = await pool.query<{ n: number }>('SELECT count(DISTINCT instance_id)::int AS n FROM heartbeats');
   assert.equal(rows[0].n, 3);
   const counted = await pool.query<{ count: number }>('SELECT count FROM new_instance_counts WHERE day = $1', [new Date(now).toISOString().slice(0, 10)]);
   assert.equal(counted.rows[0].count, 5);
+  const waiting = await pool.query<{ n: number }>('SELECT count(*)::int AS n FROM pending_heartbeats');
+  assert.equal(waiting.rows[0].n, 2);
+});
+
+test('with Postgres: a deferred heartbeat is counted later, never lost, and the day\'s budget holds', { skip: !withPg && 'set ROLLUP_TEST_PG=1 and point PG_PORT at a throwaway Postgres' }, async (t) => {
+  await migrate();
+  await pool.query('TRUNCATE heartbeats, instance_meta, new_instance_counts, pending_heartbeats, error_counts');
+  const max = env.maxNewInstancesPerDay;
+  env.maxNewInstancesPerDay = 3;
+  t.after(() => { env.maxNewInstancesPerDay = max; });
+  t.mock.method(log, 'warn', () => {});
+  t.mock.method(log, 'info', () => {});
+  const DAY = 86_400_000;
+  const day0 = Date.parse(`${utcDay(-6)}T12:00:00Z`);
+  const day1 = day0 + DAY;
+  const day2 = day0 + 2 * DAY;
+  const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const id = () => crypto.randomUUID();
+  const send = (instance_id: string, at: number, extra: Record<string, unknown> = {}) =>
+    storeHeartbeat(validate({ ...v1, instance_id, ts: new Date(at).toISOString(), ...extra }, at)!, at);
+  const days = async (instance_id: string) => (await pool.query<{ d: string }>(
+    "SELECT to_char(day, 'YYYY-MM-DD') AS d FROM heartbeats WHERE instance_id = $1 ORDER BY day", [instance_id])).rows.map((r) => r.d);
+
+  // Day 0: three new ids are stored, five wait (the last one with error counts).
+  const [a, b, c] = [id(), id(), id()];
+  const waiting = [id(), id(), id(), id(), id()];
+  for (const x of [a, b, c]) assert.equal(await send(x, day0), 'stored');
+  for (const x of waiting.slice(0, 4)) assert.equal(await send(x, day0), 'deferred');
+  assert.equal(await send(waiting[4], day0, { schema: '2', errors: [error] }), 'deferred');
+  // Nothing waits long enough yet, and none came back.
+  assert.equal(await promotePending(day0), 0);
+
+  // Day 1: the day's three new ids come first; four of the waiting ones send again and wait again.
+  for (const x of [id(), id(), id()]) assert.equal(await send(x, day1), 'stored');
+  for (const x of waiting.slice(0, 4)) assert.equal(await send(x, day1), 'deferred');
+  assert.equal(await send(a, day1), 'stored');
+  // Those that came back are counted, oldest first, as many as the day's budget of three.
+  assert.equal(await promotePending(day1), 3);
+  for (const x of waiting.slice(0, 3)) assert.deepEqual(await days(x), [dayOf(day0), dayOf(day1)]);
+  assert.deepEqual(await days(waiting[3]), []);
+  const meta = await pool.query<{ d: string }>("SELECT to_char(first_seen, 'YYYY-MM-DD') AS d FROM instance_meta WHERE instance_id = $1", [waiting[0]]);
+  assert.equal(meta.rows[0].d, dayOf(day0));
+  assert.equal(await promotePending(day1), 0, 'the day\'s budget was used up');
+
+  // Day 2: the one that came back, then the one that sent once and waited two days.
+  assert.equal(await promotePending(day2), 2);
+  assert.deepEqual(await days(waiting[3]), [dayOf(day0), dayOf(day1)]);
+  assert.deepEqual(await days(waiting[4]), [dayOf(day0)]);
+  const errors = await pool.query<{ n: number }>('SELECT count(*)::int AS n FROM error_counts WHERE instance_id = $1', [waiting[4]]);
+  assert.equal(errors.rows[0].n, 1, 'the deferred heartbeat\'s error counts were lost');
+  const left = await pool.query<{ n: number }>('SELECT count(*)::int AS n FROM pending_heartbeats');
+  assert.equal(left.rows[0].n, 0);
+  const promoted = await pool.query<{ d: string; promoted: number }>("SELECT to_char(day, 'YYYY-MM-DD') AS d, promoted FROM new_instance_counts ORDER BY day");
+  assert.deepEqual(promoted.rows.map((r) => [r.d, r.promoted]), [[dayOf(day0), 0], [dayOf(day1), 3], [dayOf(day2), 2]]);
+});
+
+test('with Postgres: one instance brings in at most its share of the day\'s error forwards', { skip: !withPg && 'set ROLLUP_TEST_PG=1 and point PG_PORT at a throwaway Postgres' }, async (t) => {
+  await migrate();
+  await pool.query('TRUNCATE error_counts, error_forwards, error_instant_forwards, error_forward_senders');
+  const dsn = env.bugsinkTelemetryDsn;
+  env.bugsinkTelemetryDsn = 'https://77896adcc21c4520acff7ea093e42b2d@bugsink.example.org/2';
+  t.after(() => { env.bugsinkTelemetryDsn = dsn; });
+  t.mock.method(log, 'info', () => {});
+  const sent: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
+    sent.push(JSON.parse(String(init.body).trim().split('\n')[2]).fingerprint[1]);
+    return new Response(null, { status: 200 });
+  });
+  const { runForward } = await import('./forward.js');
+  const { forwardInstant } = await import('./instant.js');
+  const now = Date.now();
+  const complete = new Date(now - 3 * 86_400_000).toISOString().slice(0, 10);
+  const [one, other, third] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+  const row = (instance: string, fingerprint: string) => pool.query(
+    `INSERT INTO error_counts (instance_id, day, fingerprint, version, name, frames, count_bucket, days)
+     VALUES ($1, $2, $3, '1.21.1', 'TypeError', '[]', '1', 1)`, [instance, complete, fingerprint]);
+  // Fifteen groups only one instance reports, and one that two others report.
+  for (let i = 0; i < 15; i++) await row(one, i.toString(16).padStart(16, '0'));
+  await row(other, 'fedcba9876543210');
+  await row(third, 'fedcba9876543210');
+
+  assert.deepEqual(await runForward(now), { forwarded: 11, failed: 0 });
+  // The group two instances reported went first.
+  assert.equal(sent[0], 'fedcba9876543210');
+  const share = await pool.query<{ id: string; count: number }>('SELECT instance_id::text AS id, count FROM error_forward_senders');
+  assert.equal(share.rows.find((r) => r.id === one)?.count, 10);
+  // The rest wait: the next run reads none of them today.
+  assert.deepEqual(await runForward(now + 60_000), { forwarded: 0, failed: 0 });
+  // The same share holds for the instance's instant batches.
+  const batch = validateErrorBatch({ schema: '1', instance_id: one, day: utcDay(), errors: [{ ...error, fingerprint: 'aaaaaaaaaaaaaaaa' }] })!;
+  assert.deepEqual(await forwardInstant(batch, now + 120_000), { forwarded: 0, failed: 0 });
+  const claims = await pool.query<{ n: number }>('SELECT count(*)::int AS n FROM error_instant_forwards');
+  assert.equal(claims.rows[0].n, 0, 'the claim was not given back');
 });

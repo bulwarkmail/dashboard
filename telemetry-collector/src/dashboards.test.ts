@@ -35,6 +35,17 @@ test('the platform mix still shows desktop, with no filter', () => {
   }
 });
 
+// Anyone can post a heartbeat with a new id. The public version table puts the versions that
+// installations known for more than a day run first, and leaves out a version only one new
+// installation reports, so versions that appeared today from new ids push no real one off it.
+// public-version-panel.test.ts runs the panel against Postgres.
+test('the public version table ranks by installations known for more than a day', () => {
+  const sql = panels('public-adoption').find((p) => p.title.startsWith('Version distribution'))?.targets?.[0]?.rawSql ?? '';
+  assert.match(sql, /count\(\*\) FILTER \(WHERE im\.first_seen < \(SELECT to_d FROM win\) - 1\) AS known/);
+  assert.match(sql, /LEFT JOIN instance_meta im ON im\.instance_id = l\.instance_id/);
+  assert.match(sql, /WHERE known > 0 OR instances >= 2 ORDER BY known DESC, instances DESC,/);
+});
+
 // Stored versions stay 90 days, also ones from before the collector bounded them: a panel casts
 // only the leading N.N.N of at most 4 digits each (anything else becomes NULL) and sorts NULL last.
 test('every panel that sorts by version copes with any stored version', () => {

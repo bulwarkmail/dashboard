@@ -1,7 +1,7 @@
 import { pool } from './db.js';
 import { env } from './env.js';
 import { log } from './log.js';
-import { SEND_TIMEOUT_MS, buildForwardEvent, envelope, envelopeUrlFor, forwardBudget } from './forward.js';
+import { SEND_TIMEOUT_MS, buildForwardEvent, chargeReporter, envelope, envelopeUrlFor, forwardBudget, refundReporter } from './forward.js';
 import type { CleanErrorBatch } from './validate.js';
 
 // Instant error counts (POST /v1/errors): instances with the error-count
@@ -110,7 +110,8 @@ export async function storeInstantErrors(batch: CleanErrorBatch): Promise<void> 
 
 /**
  * Send the errors of `batch` no instance reported yet today to Bugsink, while
- * the day's budget of forwarded groups lasts (`forwardBudget`).
+ * the day's budget of forwarded groups (`forwardBudget`) and the instance's
+ * share of it (`chargeReporter`) last.
  * Each is claimed in error_instant_forwards first, so it goes once across
  * instances and concurrent batches; a failed send gives the claim back.
  * Never throws.
@@ -133,6 +134,15 @@ export async function forwardInstant(batch: CleanErrorBatch, now = Date.now()): 
       if (!claim.rowCount) {
         giveSlotBack();
         continue;
+      }
+      // One instance brings in at most its share of the day's forwards.
+      if (!(await chargeReporter([batch.instance_id], now))) {
+        await pool.query(
+          `DELETE FROM error_instant_forwards WHERE day = $1 AND fingerprint = $2 AND version = $3`,
+          [batch.day, error.fingerprint, error.version],
+        );
+        giveSlotBack();
+        break;
       }
       let ok = false;
       try {
@@ -164,6 +174,7 @@ export async function forwardInstant(batch: CleanErrorBatch, now = Date.now()): 
           `DELETE FROM error_instant_forwards WHERE day = $1 AND fingerprint = $2 AND version = $3`,
           [batch.day, error.fingerprint, error.version],
         );
+        await refundReporter(batch.instance_id, now);
         result.failed++;
         // Bugsink is likely down; the rest wait for a later batch or the daily forward.
         break;

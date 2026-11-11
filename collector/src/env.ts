@@ -55,6 +55,10 @@ export const env = {
   fastIntervalMs: num('COLLECTOR_INTERVAL_FAST_MS', 15 * 60 * 1000),
   slowIntervalMs: num('COLLECTOR_INTERVAL_SLOW_MS', 24 * 60 * 60 * 1000),
   reposDir: process.env.COLLECTOR_REPOS_DIR || '/opt/bulwark-dashboard/data/repos',
+  // Limits of one repository's git scan (see git.ts).
+  scanDeadlineMs: num('COLLECTOR_SCAN_DEADLINE_MS', 30 * 60 * 1000),
+  unpackMaxBytes: num('COLLECTOR_UNPACK_MAX_BYTES', 1024 * 1024 * 1024),
+  unpackMaxEntries: num('COLLECTOR_UNPACK_MAX_ENTRIES', 200_000),
   runOnce: process.argv.includes('--once'),
   ghcrPackages: ghcrPackages(
     process.env.GHCR_PACKAGES

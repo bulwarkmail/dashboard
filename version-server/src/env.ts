@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function loadDotenv(file: string): void {
   if (!fs.existsSync(file)) return;
@@ -16,7 +17,7 @@ function loadDotenv(file: string): void {
   }
 }
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 loadDotenv(path.resolve(here, '..', '..', '.env'));
 
 function num(name: string, fallback: number): number {

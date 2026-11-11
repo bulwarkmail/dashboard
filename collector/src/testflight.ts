@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { pool } from './db.js';
 import { env } from './env.js';
-import { log } from './log.js';
+import { errorText, log } from './log.js';
 
 const API = 'https://api.appstoreconnect.apple.com';
 
@@ -21,7 +21,8 @@ function jwt(): string {
 async function get(token: string, path: string): Promise<any> {
   const res = await fetch(API + path, { headers: { authorization: `Bearer ${token}` } });
   const text = await res.text();
-  if (!res.ok) throw new Error(`${path}: HTTP ${res.status} ${text.slice(0, 200)}`);
+  // Up to 200 characters of the answer go into the error, with credentials and keys taken out.
+  if (!res.ok) throw new Error(`${path}: HTTP ${res.status} ${errorText(text, [token], 200)}`);
   return JSON.parse(text);
 }
 

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function loadDotenv(file: string): void {
   if (!fs.existsSync(file)) return;
@@ -16,8 +17,11 @@ function loadDotenv(file: string): void {
   }
 }
 
-const here = path.dirname(new URL(import.meta.url).pathname);
-loadDotenv(path.resolve(here, '..', '..', '.env'));
+const here = path.dirname(fileURLToPath(import.meta.url));
+// The collector's own variables are in collector/.env (deploy.sh writes it with nothing else). The
+// stack's .env, which also holds the other services' secrets, is read only when that file is missing.
+const own = path.resolve(here, '..', '.env');
+loadDotenv(fs.existsSync(own) ? own : path.resolve(here, '..', '..', '.env'));
 
 function required(name: string): string {
   const v = process.env[name];

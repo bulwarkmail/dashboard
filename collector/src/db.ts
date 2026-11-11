@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { env } from './env.js';
 import { log } from './log.js';
@@ -14,7 +15,7 @@ export const pool = new pg.Pool({
 });
 
 export async function migrate(): Promise<void> {
-  const here = path.dirname(new URL(import.meta.url).pathname);
+  const here = path.dirname(fileURLToPath(import.meta.url));
   const sqlPath = path.resolve(here, 'schema.sql');
   // After tsc compile, schema.sql sits next to the .js files only if we copy it.
   // Fall back to source location for `npm run dev`.

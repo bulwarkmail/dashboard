@@ -10,8 +10,13 @@ scrape_configs:
       - targets: ["localhost:9090"]
 
   # bulwark-relay container, joined via the external `bulwark` docker network.
+  # The relay answers /metrics only with its metrics token, which
+  # docker-compose.yml mounts from secrets/relay-metrics-token on the host.
   - job_name: relay
     metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/relay-metrics-token
     static_configs:
       - targets: ["bulwark-relay:3003"]
 

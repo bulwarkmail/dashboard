@@ -52,6 +52,26 @@ server {
         proxy_set_header Host $host;
     }
 
+    # The Android download: the version server redirects to the newest
+    # release's APK and to its checksum file.
+    location = /android/latest.apk {
+        proxy_pass http://127.0.0.1:3009/android/latest.apk;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-For "";
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /android/latest.apk.sha256 {
+        proxy_pass http://127.0.0.1:3009/android/latest.apk.sha256;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-For "";
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     location / {
         return 404;
     }

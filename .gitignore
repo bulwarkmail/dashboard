@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# Key and token files on the host (App Store Connect key, the relay's metrics token)
+/secrets/
 
 # Build / deps
 node_modules/

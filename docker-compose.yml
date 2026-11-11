@@ -38,6 +38,8 @@ services:
       - --web.enable-lifecycle
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # The relay's metrics token (deploy.sh makes the file if it is missing).
+      - ./secrets/relay-metrics-token:/etc/prometheus/relay-metrics-token:ro
       - ./data/prometheus:/prometheus
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -5,7 +5,7 @@ Internal observability stack for the Bulwark org: Grafana + Prometheus + Postgre
 ## Components
 
 - **Grafana** - dashboards, host port `3006`. The admin vhost has no nginx basic auth; Grafana's own login is the gate: the local admin account, or authentik with the `grafana-admin` role (Admin) or `grafana-viewer` role (Viewer). Anyone authentik lets through without one of those roles is refused. Its Postgres data sources log in with read-only roles, see below.
-- **Prometheus** - scrapes `/metrics` from `relay`, `stalwart`, and the host. Internal docker network only.
+- **Prometheus** - scrapes `/metrics` from `relay`, `stalwart`, and the host. Internal docker network only. The relay wants its metrics token: put it in `secrets/relay-metrics-token` (one line, no newline needed); `deploy.sh` makes the file readable by Prometheus only.
 - **Postgres 16** - backing store for Grafana, Umami, and the GitHub collector. Bound to `127.0.0.1:5432`.
 - **Umami** - privacy-friendly web analytics. Public vhost; tracking script reachable from end-user browsers.
 - **collector** (pm2) - periodically pulls per-repo GitHub stats (stars, issues, traffic, releases) and computes commits + LOC by cloning into `data/repos/`. Writes to the `dashboard` Postgres DB.
@@ -17,6 +17,7 @@ Internal observability stack for the Bulwark org: Grafana + Prometheus + Postgre
 $APP_DIR/
 ├── docker-compose.yml          # grafana, prometheus, postgres, umami
 ├── .env                        # secrets + site config, chmod 600
+├── secrets/                    # relay-metrics-token, the App Store Connect key (not in git)
 ├── nginx/*.conf.template       # rendered with envsubst by deploy.sh
 ├── prometheus/prometheus.yml
 ├── grafana/provisioning/...
@@ -39,9 +40,9 @@ $APP_DIR/
 ./deploy.sh
 ```
 
-First run: generates `.env` with random secrets and exits - fill in `GRAFANA_DOMAIN`, `UMAMI_DOMAIN`, `TELEMETRY_DOMAIN`, `LE_EMAIL`, then re-run.
+First run: generates `.env` with random secrets and exits - fill in `GRAFANA_DOMAIN`, `UMAMI_DOMAIN`, `TELEMETRY_DOMAIN`, `LE_EMAIL` and `GRAFANA_OIDC_SECRET`, then re-run.
 
-Subsequent runs: render nginx vhost templates, request any missing Let's Encrypt certs, pull compose images, restart services, rebuild + reload the pm2 collectors, apply Grafana's read-only database logins.
+Subsequent runs render every nginx vhost from `nginx/*.conf.template` and overwrite what is in `/etc/nginx/sites-available`, so a change made on the host by hand belongs in the template first. Then they request any missing Let's Encrypt certs, pull compose images, restart services, rebuild + reload the pm2 collectors, apply Grafana's read-only database logins.
 
 ## Grafana's database logins
 

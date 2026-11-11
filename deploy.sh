@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Idempotent deploy / redeploy. Run from $APP_DIR on the server.
-# First run: generates .env, installs nginx vhosts + certs + htpasswd, starts compose.
+# First run: generates .env, installs nginx vhosts + certs, starts compose.
 # Subsequent runs: pulls compose images, applies config, restarts services.
 #
 # All site-specific values (domains, email, install path) come from .env.
@@ -58,7 +58,6 @@ if [ ! -f .env ]; then
   sed -i "s|^POSTGRES_TELEMETRY_PASSWORD=.*|POSTGRES_TELEMETRY_PASSWORD=$(rand)|"   .env
   sed -i "s|^GRAFANA_ADMIN_PASSWORD=.*|GRAFANA_ADMIN_PASSWORD=$(rand)|"             .env
   sed -i "s|^UMAMI_APP_SECRET=.*|UMAMI_APP_SECRET=$(rand)|"                         .env
-  sed -i "s|^BASIC_AUTH_PASSWORD=.*|BASIC_AUTH_PASSWORD=$(rand)|"                   .env
 fi
 # Secrets added after the first release: generated in an existing .env too.
 for name in POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD POSTGRES_GRAFANA_UMAMI_RO_PASSWORD POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD; do
@@ -82,9 +81,6 @@ set -a; . ./.env; set +a
 # first deploy and written back to .env. Default to a stub so envsubst
 # doesn't blank the redirect target before bootstrap finishes.
 : "${GRAFANA_PUBLIC_DASHBOARD_TOKEN:=pending}"
-# Legacy basic-auth fields are no longer used; tolerate their absence.
-: "${BASIC_AUTH_USER:=admin}"
-: "${BASIC_AUTH_PASSWORD:=}"
 
 command -v envsubst >/dev/null || die "envsubst not found — install gettext-base"
 
@@ -93,6 +89,19 @@ mkdir -p data/postgres data/prometheus data/grafana data/repos
 # Grafana container runs as uid 472, prometheus as 65534.
 chown -R 472:472   data/grafana
 chown -R 65534:65534 data/prometheus
+
+# The relay's metrics token, which Prometheus sends on the relay job. Without
+# the file, docker would mount an empty folder in its place; an empty file
+# just fails that one scrape until the token is put in.
+mkdir -p secrets
+chmod 750 secrets
+if [ ! -f secrets/relay-metrics-token ]; then
+  log "WARN: secrets/relay-metrics-token is missing; put the relay's metrics token in it, Prometheus can't scrape the relay until then"
+  : > secrets/relay-metrics-token
+fi
+# Readable by Prometheus (uid 65534) only.
+chown 65534:65534 secrets/relay-metrics-token
+chmod 400 secrets/relay-metrics-token
 
 # --- 3. nginx vhosts -------------------------------------------------------
 # Drop any leftover htpasswd from older deploys — internal Grafana now

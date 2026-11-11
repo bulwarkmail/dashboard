@@ -172,6 +172,9 @@ nginx -t
 systemctl reload nginx
 
 # --- 4. docker compose -----------------------------------------------------
+# The shared network for cross-stack scraping: the compose file joins
+# Prometheus to it as an external network, so it has to exist first.
+docker network inspect bulwark >/dev/null 2>&1 || docker network create bulwark
 log "Pulling images"
 docker compose pull
 log "Starting stack"
@@ -194,9 +197,6 @@ apply_grafana_logins() {
   docker compose exec -T postgres psql -X -q -U postgres -d postgres < "$APP_DIR/postgres/grafana-read-only.sql"
 }
 apply_grafana_logins
-
-# --- 5. shared docker network for cross-stack scraping --------------------
-docker network inspect bulwark >/dev/null 2>&1 || docker network create bulwark
 
 # --- 6. scc (LOC counter) --------------------------------------------------
 if ! command -v scc >/dev/null 2>&1; then

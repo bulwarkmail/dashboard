@@ -88,6 +88,15 @@ test('deploy.sh checks the scc download against a pinned sha256 before installin
   assert.match(deploy, /\b[0-9a-f]{64}\b/, 'no sha256 is pinned in deploy.sh');
 });
 
+test('deploy.sh creates the shared docker network before it starts the stack', () => {
+  const deploy = withoutComments(read('deploy.sh'));
+  // The compose file joins Prometheus to it as an external network, which has to exist.
+  assert.match(read('docker-compose.yml'), /\n {2}bulwark:\r?\n {4}external: true/);
+  const created = deploy.indexOf('docker network create bulwark');
+  assert.ok(created >= 0, 'deploy.sh does not create the network');
+  assert.ok(created < deploy.indexOf('docker compose up -d'), 'the stack starts before the network exists');
+});
+
 test('Prometheus has no lifecycle API', () => {
   assert.doesNotMatch(withoutComments(read('docker-compose.yml')), /--web\.enable-lifecycle/);
   assert.doesNotMatch(withoutComments(read('docker-compose.yml')), /--web\.enable-admin-api/);

@@ -1,0 +1,123 @@
+{
+  "uid": "bulwark-warden",
+  "title": "Bulwark Warden",
+  "description": "Cost and outcome of every Warden run (GitHub and Discord). Source: warden_runs in the warden database, written by the bot.",
+  "tags": ["bulwark", "warden"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "1m",
+  "time": { "from": "now-7d", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Spend today",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "uid": "warden_pg" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2, "color": { "mode": "fixed", "fixedColor": "text" } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none", "graphMode": "none" },
+      "targets": [{ "refId": "A", "format": "table", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT coalesce(sum(cost_usd), 0) AS \"USD\" FROM warden_runs WHERE ts >= date_trunc('day', now())" }]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Last 7 days",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "uid": "warden_pg" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2, "color": { "mode": "fixed", "fixedColor": "text" } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none", "graphMode": "none" },
+      "targets": [{ "refId": "A", "format": "table", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT coalesce(sum(cost_usd), 0) AS \"USD\" FROM warden_runs WHERE ts >= now() - interval '7 days'" }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Last 30 days",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "uid": "warden_pg" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2, "color": { "mode": "fixed", "fixedColor": "text" } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none", "graphMode": "none" },
+      "targets": [{ "refId": "A", "format": "table", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT coalesce(sum(cost_usd), 0) AS \"USD\" FROM warden_runs WHERE ts >= now() - interval '30 days'" }]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Runs / replies posted (selected range)",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "uid": "warden_pg" },
+      "fieldConfig": { "defaults": { "decimals": 0, "color": { "mode": "fixed", "fixedColor": "text" } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none", "graphMode": "none", "textMode": "value_and_name" },
+      "targets": [{ "refId": "A", "format": "table", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT count(*) AS \"Runs\", count(*) FILTER (WHERE posted) AS \"Replies posted\" FROM warden_runs WHERE $__timeFilter(ts)" }]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Average cost (selected range)",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "uid": "warden_pg" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 3, "color": { "mode": "fixed", "fixedColor": "text" } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none", "graphMode": "none", "textMode": "value_and_name" },
+      "targets": [{ "refId": "A", "format": "table", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT avg(cost_usd) AS \"Per run\", avg(cost_usd) FILTER (WHERE posted) AS \"Per posted reply\" FROM warden_runs WHERE $__timeFilter(ts)" }]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Cost per day",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "uid": "warden_pg" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2, "custom": { "drawStyle": "bars", "fillOpacity": 80, "stacking": { "mode": "normal" }, "lineWidth": 0 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "refId": "A", "format": "time_series", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT $__timeGroupAlias(ts, '1d', 0), platform AS metric, sum(cost_usd) AS value FROM warden_runs WHERE $__timeFilter(ts) GROUP BY 1, 2 ORDER BY 1" }]
+    },
+    {
+      "id": 7, "type": "barchart", "title": "Cost by route (selected range)",
+      "description": "silent and decline are the cheap Sonnet decisions; simple is a Sonnet answer checked by Opus; hard is Opus throughout.",
+      "gridPos": { "x": 12, "y": 4, "w": 6, "h": 8 },
+      "datasource": { "uid": "warden_pg" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2 } },
+      "options": { "orientation": "horizontal", "showValue": "always", "legend": { "showLegend": false } },
+      "targets": [{ "refId": "A", "format": "table", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT coalesce(route, 'before routing') AS route, sum(cost_usd) AS \"USD\" FROM warden_runs WHERE $__timeFilter(ts) GROUP BY 1 ORDER BY 2 DESC" }]
+    },
+    {
+      "id": 8, "type": "barchart", "title": "Cost by model (selected range)",
+      "description": "Only runs recorded live; the rows backfilled from the log have no split by model.",
+      "gridPos": { "x": 18, "y": 4, "w": 6, "h": 8 },
+      "datasource": { "uid": "warden_pg" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2 } },
+      "options": { "orientation": "horizontal", "showValue": "always", "legend": { "showLegend": false } },
+      "targets": [{ "refId": "A", "format": "table", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT m.key AS model, sum(m.value::numeric) AS \"USD\" FROM warden_runs, jsonb_each_text(cost_by_model) AS m WHERE $__timeFilter(ts) GROUP BY 1 ORDER BY 2 DESC" }]
+    },
+    {
+      "id": 9, "type": "table", "title": "Runs (newest first)",
+      "gridPos": { "x": 0, "y": 12, "w": 24, "h": 12 },
+      "datasource": { "uid": "warden_pg" },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "filterable": true } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Cost" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 3 }, { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } }, { "id": "color", "value": { "mode": "continuous-GrYlRd" } }, { "id": "max", "value": 1 }, { "id": "min", "value": 0 }] },
+          { "matcher": { "id": "byName", "options": "Where" }, "properties": [{ "id": "links", "value": [{ "title": "Open", "url": "${__data.fields.url}", "targetBlank": true }] }] },
+          { "matcher": { "id": "byName", "options": "url" }, "properties": [{ "id": "custom.hidden", "value": true }] },
+          { "matcher": { "id": "byName", "options": "Seconds" }, "properties": [{ "id": "unit", "value": "s" }, { "id": "decimals", "value": 0 }] },
+          { "matcher": { "id": "byName", "options": "Time" }, "properties": [{ "id": "custom.width", "value": 165 }] }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [{ "displayName": "Time", "desc": true }] },
+      "targets": [{ "refId": "A", "format": "table", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT ts AS \"Time\", platform AS \"Platform\", kind AS \"Kind\", coalesce(place, '') AS \"Where\", url, author AS \"Author\", route AS \"Route\", action AS \"Result\", check_result AS \"Check\", rounds AS \"Rounds\", seconds AS \"Seconds\", cost_usd AS \"Cost\", reason AS \"Why silent\" FROM warden_runs WHERE $__timeFilter(ts) ORDER BY ts DESC LIMIT 500" }]
+    },
+    {
+      "id": 10, "type": "table", "title": "Most expensive runs (selected range)",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 8 },
+      "datasource": { "uid": "warden_pg" },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Cost" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 3 }] },
+          { "matcher": { "id": "byName", "options": "Where" }, "properties": [{ "id": "links", "value": [{ "title": "Open", "url": "${__data.fields.url}", "targetBlank": true }] }] },
+          { "matcher": { "id": "byName", "options": "url" }, "properties": [{ "id": "custom.hidden", "value": true }] },
+          { "matcher": { "id": "byName", "options": "Seconds" }, "properties": [{ "id": "unit", "value": "s" }, { "id": "decimals", "value": 0 }] }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "targets": [{ "refId": "A", "format": "table", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT cost_usd AS \"Cost\", ts AS \"Time\", platform AS \"Platform\", kind AS \"Kind\", coalesce(place, '') AS \"Where\", url, route AS \"Route\", rounds AS \"Rounds\", seconds AS \"Seconds\", input_tokens AS \"Input\", cache_read AS \"Cache read\", cache_write AS \"Cache write\", output_tokens AS \"Output\" FROM warden_runs WHERE $__timeFilter(ts) ORDER BY cost_usd DESC NULLS LAST LIMIT 15" }]
+    }
+  ]
+}

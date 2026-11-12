@@ -2,7 +2,7 @@
 # chosen. Dependabot (.github/dependabot.yml) proposes updates.
 services:
   postgres:
-    image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+    image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     container_name: bulwark-dashboard-postgres
     restart: unless-stopped
     environment:
@@ -36,7 +36,7 @@ services:
   # One still running at 30 seconds (it caught the cancel) is ended with its
   # session.
   query-watchdog:
-    image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+    image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     container_name: bulwark-dashboard-query-watchdog
     restart: unless-stopped
     depends_on:

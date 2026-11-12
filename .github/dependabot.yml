@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # The images in docker-compose.yml, pinned by version and digest.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /collector
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /telemetry-collector
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /version-server
+    schedule:
+      interval: weekly

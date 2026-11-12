@@ -2,10 +2,11 @@ import http from 'node:http';
 import { env } from './env.js';
 import { log } from './log.js';
 import { migrate, pool } from './db.js';
-import { validate, validateErrorBatch } from './validate.js';
+import { isJsonRequest, validate, validateErrorBatch } from './validate.js';
 import { runRollup } from './rollup.js';
-import { storeHeartbeat } from './heartbeat.js';
+import { admitErrorSender, storeHeartbeat } from './heartbeat.js';
 import { runForward } from './forward.js';
+import { promotePending } from './pending.js';
 import { INSTANCE_INTERVAL_MS, InstanceLimiter, forwardInstant, storeInstantErrors } from './instant.js';
 
 const instanceLimiter = new InstanceLimiter(INSTANCE_INTERVAL_MS);
@@ -59,6 +60,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true });
     }
 
+    if (method === 'POST' && (path === '/v1/heartbeat' || path === '/v1/errors') && !isJsonRequest(req.headers['content-type'])) {
+      req.resume();
+      return send(res, 415, { ok: false });
+    }
+
     if (method === 'POST' && path === '/v1/heartbeat') {
       const { body, bytes } = await readJson(req);
       const clean = validate(body);
@@ -66,6 +72,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 400, { ok: false });
       }
       if (clean.schema === '1' && bytes > MAX_V1_BODY_BYTES) return send(res, 413, { ok: false });
+      // Answered alike when it was deferred or dropped (a new id past the day's limit).
       await storeHeartbeat(clean);
       return send(res, 200, { ok: true });
     }
@@ -75,6 +82,12 @@ const server = http.createServer(async (req, res) => {
       const clean = validateErrorBatch(body);
       if (!clean) return send(res, 400, { ok: false });
       if (!instanceLimiter.allow(clean.instance_id)) return send(res, 429, { ok: false });
+      // A desktop app with crash reports on and telemetry off sends error
+      // counts and never a heartbeat, and a new instance in instant mode sends
+      // them before its first heartbeat: an id the collector doesn't know takes
+      // one of the day's places for new ids. With none left, 429: the webmail
+      // and the desktop app keep the counts and send them again later.
+      if (!(await admitErrorSender(clean.instance_id))) return send(res, 429, { ok: false });
       await storeInstantErrors(clean);
       send(res, 200, { ok: true });
       // After the answer: Bugsink being slow or down never holds up an instance.
@@ -106,6 +119,13 @@ async function main(): Promise<void> {
   // apart from the heartbeat path: a failure there never fails a heartbeat.
   void runForward();
   setInterval(() => { void runForward(); }, 60 * 60 * 1000);
+
+  // Ids whose interval is over leave the /v1/errors limiter here, not on a request.
+  setInterval(() => instanceLimiter.prune(), INSTANCE_INTERVAL_MS);
+
+  // Count deferred heartbeats of new ids into each day's budget (pending.ts).
+  void promotePending();
+  setInterval(() => { void promotePending(); }, 60 * 60 * 1000);
 
   const shutdown = async (sig: string): Promise<void> => {
     log.info('shutting down', { sig });

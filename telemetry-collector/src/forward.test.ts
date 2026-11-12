@@ -59,7 +59,9 @@ test('each group is sent once, without the instance id, and marked as forwarded'
   const sql: string[] = [];
   t.mock.method(pool, 'query', async (text: string) => {
     sql.push(text.replace(/\s+/g, ' ').trim());
-    return text.includes('FROM error_counts') ? { rows: [group, { ...group, fingerprint: 'fedcba9876543210' }] } : { rows: [] };
+    // Each group is charged to a reporting instance that still has its share.
+    if (text.includes('INSERT INTO error_forward_senders')) return { rows: [{ instance_id: INSTANCE }] };
+    return text.includes('FROM error_counts') ? { rows: [{ ...group, reporters: [INSTANCE] }, { ...group, fingerprint: 'fedcba9876543210', reporters: [INSTANCE] }] } : { rows: [] };
   });
   const bodies: string[] = [];
   t.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
@@ -69,8 +71,39 @@ test('each group is sent once, without the instance id, and marked as forwarded'
   assert.deepEqual(await runForward(Date.parse('2026-11-10T01:00:00Z')), { forwarded: 2, failed: 0 });
   assert.equal(bodies.length, 2);
   for (const body of bodies) assert.equal(body.includes(INSTANCE), false);
-  assert.ok(sql[0].includes('NOT EXISTS (SELECT 1 FROM error_forwards'));
+  assert.ok(sql.find((s) => s.includes('FROM error_counts'))?.includes('NOT EXISTS (SELECT 1 FROM error_forwards'));
   assert.equal(sql.filter((s) => s.startsWith('INSERT INTO error_forwards')).length, 2);
+});
+
+test('at most 100 groups a day go to Bugsink, daily and instant forwards together; the rest wait', async (t) => {
+  env.bugsinkTelemetryDsn = 'https://77896adcc21c4520acff7ea093e42b2d@bugsink.example.org/2';
+  const now = Date.parse('2026-11-10T13:00:00Z');
+  const waiting = ['0000000000000001', '0000000000000002', '0000000000000003'].map((fingerprint) => ({ ...group, fingerprint }));
+  let sentToday = 99;
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', async (text: string, params: unknown[] = []) => {
+    const sql = text.replace(/\s+/g, ' ').trim();
+    calls.push({ sql, params });
+    if (sql.includes(' AS sent')) return { rows: [{ sent: String(sentToday) }] };
+    if (sql.includes('INSERT INTO error_forward_senders')) return { rows: [{ instance_id: INSTANCE }] };
+    if (sql.includes('FROM error_counts')) return { rows: waiting.slice(0, Number(params[1])).map((g) => ({ ...g, reporters: [INSTANCE] })) };
+    return { rows: [] };
+  });
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 200 }));
+
+  assert.deepEqual(await runForward(now), { forwarded: 1, failed: 0 });
+  const budget = calls.find((c) => c.sql.includes(' AS sent'))!;
+  assert.match(budget.sql, /FROM error_forwards WHERE forwarded_at >= \$1/);
+  assert.match(budget.sql, /FROM error_instant_forwards WHERE forwarded_at >= \$1/);
+  assert.deepEqual(budget.params, ['2026-11-10T00:00:00.000Z']);
+  assert.equal(calls.filter((c) => c.sql.includes('INSERT INTO error_forward_senders')).length, 1);
+
+  // The day's 100 are out: nothing is read or sent until the next day.
+  sentToday = 100;
+  calls.length = 0;
+  assert.deepEqual(await runForward(now + 3_600_000), { forwarded: 0, failed: 0 });
+  assert.equal(calls.some((c) => c.sql.includes('FROM error_counts')), false);
+  assert.equal(fetchMock.mock.callCount(), 1);
 });
 
 test('a failed send leaves the group for the next run and never throws', async (t) => {
@@ -78,9 +111,54 @@ test('a failed send leaves the group for the next run and never throws', async (
   const sql: string[] = [];
   t.mock.method(pool, 'query', async (text: string) => {
     sql.push(text);
-    return text.includes('FROM error_counts') ? { rows: [group, group] } : { rows: [] };
+    if (text.includes('INSERT INTO error_forward_senders')) return { rows: [{ instance_id: INSTANCE }] };
+    return text.includes('FROM error_counts') ? { rows: [{ ...group, reporters: [INSTANCE] }, { ...group, reporters: [INSTANCE] }] } : { rows: [] };
   });
   t.mock.method(globalThis, 'fetch', async () => { throw new Error('ECONNREFUSED'); });
   assert.deepEqual(await runForward(), { forwarded: 0, failed: 1 });
   assert.equal(sql.some((s) => s.includes('INSERT INTO error_forwards')), false);
+  // The charge is given back.
+  assert.equal(sql.filter((s) => s.includes('UPDATE error_forward_senders SET count = count - 1')).length, 1);
+});
+
+test('one reporting instance brings in at most its share of the day\'s forwards', async (t) => {
+  env.bugsinkTelemetryDsn = 'https://77896adcc21c4520acff7ea093e42b2d@bugsink.example.org/2';
+  const now = Date.parse('2026-11-10T13:00:00Z');
+  const OTHER = 'a0c1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b';
+  // What Postgres keeps per instance and day; the charge picks a reporter under the share.
+  const used = new Map<string, number>();
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  const groups = [
+    ...Array.from({ length: 15 }, (_, i) => ({ ...group, fingerprint: i.toString(16).padStart(16, '0'), instances: 1, reporters: [INSTANCE] })),
+    { ...group, fingerprint: 'fedcba9876543210', instances: 2, reporters: [INSTANCE, OTHER] },
+  ];
+  t.mock.method(pool, 'query', async (text: string, params: unknown[] = []) => {
+    const sql = text.replace(/\s+/g, ' ').trim();
+    calls.push({ sql, params });
+    if (sql.includes(' AS sent')) return { rows: [{ sent: '0' }] };
+    if (sql.includes('INSERT INTO error_forward_senders')) {
+      const pick = (params[1] as string[]).filter((r) => (used.get(r) ?? 0) < (params[2] as number)).sort((x, y) => (used.get(x) ?? 0) - (used.get(y) ?? 0))[0];
+      if (!pick) return { rows: [] };
+      used.set(pick, (used.get(pick) ?? 0) + 1);
+      return { rows: [{ instance_id: pick }] };
+    }
+    if (sql.includes('FROM error_counts')) return { rows: groups };
+    return { rows: [] };
+  });
+  const bodies: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
+    bodies.push(String(init.body));
+    return new Response(null, { status: 200 });
+  });
+  // Ten from the one instance; the group two instances reported still goes, charged to the other.
+  assert.deepEqual(await runForward(now), { forwarded: 11, failed: 0 });
+  assert.equal(used.get(INSTANCE), 10);
+  assert.equal(used.get(OTHER), 1);
+  const charge = calls.find((c) => c.sql.includes('INSERT INTO error_forward_senders'))!;
+  assert.deepEqual([charge.params[0], charge.params[2]], ['2026-11-10', 10]);
+  // The query leaves out groups no reporter can be charged for, and puts widely reported ones first.
+  const read = calls.find((c) => c.sql.includes('FROM error_counts'))!.sql;
+  assert.match(read, /WHERE EXISTS \(SELECT 1 FROM unnest\(g\.reporters::uuid\[\]\)/);
+  assert.match(read, /ORDER BY g\.instances DESC/);
+  for (const body of bodies) assert.equal(body.includes(INSTANCE) || body.includes(OTHER), false);
 });

@@ -3,14 +3,24 @@ import { env } from './env.js';
 import { log } from './log.js';
 
 // Daily job:
-// 1. Compute aggregate counts for each day in the heartbeats table that
-//    doesn't already have a row in daily_rollups.
+// 1. Compute aggregate counts for each finished UTC day in the heartbeats
+//    table: the days without a row in daily_rollups, and the last two
+//    finished days again, since heartbeats for yesterday still arrive
+//    today. The day still going on gets no row; older rows stay as they are.
 // 2. Update instance_meta first/last/days_seen.
 // 3. Delete heartbeats older than retentionDays, and instance_meta rows of
 //    instances last seen before then. Past the window only daily_rollups
-//    remain (no per-instance grain).
+//    remain (no per-instance grain). Deferred heartbeats go after
+//    PENDING_RETENTION_DAYS, an id's first day (instance_arrivals) with the
+//    last of its rows.
 
-export async function runRollup(): Promise<void> {
+/** How many finished days each run computes again. */
+const RECOMPUTED_DAYS = 2;
+
+/** How many days a deferred heartbeat waits in pending_heartbeats at most. */
+const PENDING_RETENTION_DAYS = 7;
+
+export async function runRollup(now = Date.now()): Promise<void> {
   const runId = (await pool.query(
     `INSERT INTO collector_runs (job) VALUES ('rollup') RETURNING id`,
   )).rows[0].id as number;
@@ -18,10 +28,15 @@ export async function runRollup(): Promise<void> {
   let processed = 0;
   let firstError: string | null = null;
   try {
+    const today = new Date(now).toISOString().slice(0, 10);
+    const recomputeFrom = new Date(now - RECOMPUTED_DAYS * 86_400_000).toISOString().slice(0, 10);
+    // The day as text: the driver would turn a date into a local-time Date.
     const days = await pool.query<{ day: string }>(
-      `SELECT DISTINCT day FROM heartbeats
-       WHERE day NOT IN (SELECT day FROM daily_rollups)
+      `SELECT DISTINCT to_char(day, 'YYYY-MM-DD') AS day FROM heartbeats
+       WHERE day < $1
+         AND (day >= $2 OR day NOT IN (SELECT day FROM daily_rollups))
        ORDER BY day`,
+      [today, recomputeFrom],
     );
     for (const row of days.rows) {
       try {
@@ -46,7 +61,7 @@ export async function runRollup(): Promise<void> {
         days_seen  = GREATEST(instance_meta.days_seen, EXCLUDED.days_seen)
     `);
 
-    const cutoff = new Date(Date.now() - env.retentionDays * 86_400_000)
+    const cutoff = new Date(now - env.retentionDays * 86_400_000)
       .toISOString().slice(0, 10);
     const del = await pool.query(`DELETE FROM heartbeats WHERE day < $1`, [cutoff]);
     log.info('rollup.deleted_raw', { cutoff, rows: del.rowCount });
@@ -55,6 +70,10 @@ export async function runRollup(): Promise<void> {
     await pool.query(`DELETE FROM error_forwards WHERE day < $1`, [cutoff]);
     await pool.query(`DELETE FROM error_instant_forwards WHERE day < $1`, [cutoff]);
     log.info('rollup.deleted_error_counts', { cutoff, rows: delErrors.rowCount });
+    await pool.query(`DELETE FROM new_instance_counts WHERE day < $1`, [cutoff]);
+    const pendingCutoff = new Date(now - PENDING_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10);
+    await pool.query(`DELETE FROM pending_heartbeats WHERE day < $1`, [pendingCutoff]);
+    await pool.query(`DELETE FROM error_forward_senders WHERE day < $1`, [cutoff]);
     // Instances not seen within the retention window lose their row too, so
     // no instance_id is kept past it. The same statement adds how many went to
     // expired_instances, so the "instances ever seen" total doesn't drop.
@@ -70,6 +89,13 @@ export async function runRollup(): Promise<void> {
       [cutoff],
     );
     log.info('rollup.deleted_instance_meta', { cutoff, rows: delMeta.rows[0]?.deleted ?? 0 });
+    // An id with nothing left loses its first day too.
+    await pool.query(
+      `DELETE FROM instance_arrivals a
+        WHERE NOT EXISTS (SELECT 1 FROM heartbeats h WHERE h.instance_id = a.instance_id)
+          AND NOT EXISTS (SELECT 1 FROM instance_meta m WHERE m.instance_id = a.instance_id)
+          AND NOT EXISTS (SELECT 1 FROM error_counts e WHERE e.instance_id = a.instance_id)`,
+    );
   } catch (e) {
     firstError = e instanceof Error ? e.message : String(e);
     log.error('rollup.aborted', { err: firstError });

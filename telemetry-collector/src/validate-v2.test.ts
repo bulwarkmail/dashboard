@@ -29,7 +29,7 @@ const error = {
 const v2 = { ...v1, schema: '2', errors: [error] };
 
 test('schema 1 is accepted and stored exactly as before', () => {
-  const clean = validate({ ...v1, extra: 'dropped' });
+  const clean = validate({ ...v1, extra: 'dropped' }, Date.parse('2026-11-10T08:12:01Z'));
   assert.ok(clean);
   assert.equal(clean.schema, '1');
   assert.equal('extra' in clean, false);

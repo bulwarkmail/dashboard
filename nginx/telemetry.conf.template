@@ -1,3 +1,9 @@
+# Each address may post 6 heartbeats or error batches a minute, 10 at once;
+# a real instance sends one heartbeat a day. nginx keeps the addresses of
+# this zone in memory only, and this vhost logs nothing (below), so no
+# address is stored anywhere, as the page at / says.
+limit_req_zone $binary_remote_addr zone=telemetry:1m rate=6r/m;
+
 server {
     listen 80;
     listen [::]:80;
@@ -40,13 +46,29 @@ server {
     access_log off;
     error_log /dev/null crit;
 
-    client_max_body_size 8k;
+    # The collector reads up to 64 KiB: a heartbeat with error counts, or an
+    # error batch, carries up to 50 errors of 5 frames each.
+    client_max_body_size 64k;
+    limit_req_status 429;
 
     location = /v1/heartbeat {
+        limit_req zone=telemetry burst=10 nodelay;
         proxy_pass http://127.0.0.1:3008/v1/heartbeat;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         # Don't forward client IPs — the collector should never see them.
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-For "";
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Instant error counts, from instances with that consent.
+    location = /v1/errors {
+        limit_req zone=telemetry burst=10 nodelay;
+        proxy_pass http://127.0.0.1:3008/v1/errors;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        # Like the heartbeat: the collector never sees a client IP.
         proxy_set_header X-Real-IP "";
         proxy_set_header X-Forwarded-For "";
         proxy_set_header X-Forwarded-Proto $scheme;

@@ -1,6 +1,8 @@
+# Every image is pinned to a version and its digest, so a deploy runs what was
+# chosen. Dependabot (.github/dependabot.yml) proposes updates.
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     container_name: bulwark-dashboard-postgres
     restart: unless-stopped
     environment:
@@ -15,6 +17,7 @@ services:
       POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD: ${POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD}
       POSTGRES_GRAFANA_UMAMI_RO_PASSWORD: ${POSTGRES_GRAFANA_UMAMI_RO_PASSWORD}
       POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD: ${POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD}
+      POSTGRES_QUERY_WATCHDOG_PASSWORD: ${POSTGRES_QUERY_WATCHDOG_PASSWORD}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
@@ -27,17 +30,48 @@ services:
       timeout: 5s
       retries: 5
 
+  # Cancels statements of Grafana's read-only logins after 20 seconds, which
+  # their own statement_timeout can't promise: a session can switch it off.
+  # One still running at 30 seconds (it caught the cancel) is ended with its
+  # session.
+  query-watchdog:
+    image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+    container_name: bulwark-dashboard-query-watchdog
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    user: postgres
+    entrypoint: ["/bin/sh", "/watchdog/query-watchdog.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: grafana_query_watchdog
+      PGDATABASE: postgres
+      PGPASSWORD: ${POSTGRES_QUERY_WATCHDOG_PASSWORD}
+      PGCONNECT_TIMEOUT: "5"
+    volumes:
+      - ./postgres/watchdog:/watchdog:ro
+    # The image declares a data volume; nothing is stored here.
+    tmpfs:
+      - /var/lib/postgresql/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
     container_name: bulwark-dashboard-prometheus
     restart: unless-stopped
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=90d
-      - --web.enable-lifecycle
+    # No --web.enable-lifecycle: every container on the shared bulwark network
+    # reaches Prometheus, and a config change is a container restart anyway.
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # The relay's metrics token (deploy.sh makes the file if it is missing).
+      - ./secrets/relay-metrics-token:/etc/prometheus/relay-metrics-token:ro
       - ./data/prometheus:/prometheus
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -46,7 +80,7 @@ services:
       - bulwark
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.3.1@sha256:0615ec4fbd4072004b7d86b46ded63013a74b7d6eb1119273dd89e8fa25c13cf
     container_name: bulwark-dashboard-grafana
     restart: unless-stopped
     depends_on:
@@ -65,8 +99,9 @@ services:
       GF_DATABASE_SSL_MODE: disable
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Grafana's own /metrics answers without a login; nothing scrapes it.
+      GF_METRICS_ENABLED: "false"
       GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_INSTALL_PLUGINS: frser-sqlite-datasource
       # --- authentik SSO (identitaet.rathblume.de, app bulwark-grafana), 2026-09-03. Local admin login stays as break-glass. ---
       GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
       GF_AUTH_GENERIC_OAUTH_NAME: Rathblume Login
@@ -97,7 +132,7 @@ services:
       - "127.0.0.1:3006:3000"
 
   umami:
-    image: ghcr.io/umami-software/umami:postgresql-latest
+    image: ghcr.io/umami-software/umami:3.4.1@sha256:e69d1a7932e9dab0fc523edc7be1f3a53f3c261f57856fc2167ae74a8fc022e8
     container_name: bulwark-dashboard-umami
     restart: unless-stopped
     depends_on:
@@ -111,6 +146,11 @@ services:
       # New session hash every day (Umami's default is every month), as the
       # website's privacy page promises.
       SALT_ROTATION: day
+      # The visitor's address comes from X-Real-IP, which nginx sets to the
+      # connection's address, and the location from that address: no other
+      # client-IP or CDN location header counts (there is no CDN in front).
+      CLIENT_IP_HEADER: x-real-ip
+      SKIP_LOCATION_HEADERS: "1"
     ports:
       - "127.0.0.1:3007:3000"
 

@@ -9,13 +9,13 @@ const base = {
 };
 
 test('keeps only the day of the heartbeat timestamp', () => {
-  const clean = validate({ ...base, ts: '2026-04-27T17:42:13.456Z' });
+  const clean = validate({ ...base, ts: '2026-04-27T17:42:13.456Z' }, Date.parse('2026-04-27T17:42:14Z'));
   assert.ok(clean);
   assert.equal(clean.ts, '2026-04-27T00:00:00.000Z');
 });
 
 test('rounds a timestamp with an offset to its UTC day', () => {
-  const clean = validate({ ...base, ts: '2026-04-27T23:30:00-02:00' });
+  const clean = validate({ ...base, ts: '2026-04-27T23:30:00-02:00' }, Date.parse('2026-04-28T01:30:01Z'));
   assert.ok(clean);
   assert.equal(clean.ts, '2026-04-28T00:00:00.000Z');
 });
@@ -48,7 +48,8 @@ test('takes a main-process frame of the desktop app in an error batch, and no pa
 test('takes a prerelease with build metadata, as a beta of the desktop app reports', () => {
   assert.equal(validate({ ...base, version: '0.3.0-beta.1+desktop' })?.version, '0.3.0-beta.1+desktop');
   assert.equal(validate({ ...base, version: '1.20.0+desktop' })?.version, '1.20.0+desktop');
-  assert.equal(validate({ ...base, version: '1.20.0-rc.2' })?.version, '1.20.0-rc.2');
+  // The project tags only betas; any other prerelease word is refused.
+  assert.equal(validate({ ...base, version: '1.20.0-rc.2' }), null);
   assert.equal(validate({ ...base, version: '1.20.0+a+b' }), null);
   assert.equal(validate({ ...base, version: '1.20.0-beta/../x' }), null);
 });

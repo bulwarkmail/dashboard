@@ -362,3 +362,31 @@ test('with Postgres: one instance adds at most 200 different errors a day, and n
   await storeInstantErrors(batch(other, 1), now);
   assert.equal(await rows(other), 50);
 });
+
+// An older collector stored a heartbeat under the day the heartbeat named, and its error counts
+// under the day before that. Ids whose first heartbeat arrived two days ago naming a day eleven
+// weeks back get the day the heartbeat arrived; the error days they brought don't move it earlier.
+// An id that only ever sent error batches still gets its first day from them.
+test('with Postgres: ids whose old heartbeat named a day long past get the day it arrived, not the day of its error counts', { skip }, async (t) => {
+  await migrate();
+  await pool.query('TRUNCATE heartbeats, instance_meta, error_counts');
+  await pool.query('DROP TABLE instance_arrivals');
+  t.mock.method(log, 'info', () => {});
+  const errorRow = (id: string, daysAgo: number) => pool.query(
+    `INSERT INTO error_counts (instance_id, day, fingerprint, version, name, frames, count_bucket, days)
+     VALUES ($1, current_date - $2::int, 'abcdefabcdefabcd', '1.21.1', 'TypeError', '[]', '1', 1)`, [id, daysAgo]);
+  const namedOld = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+  for (const id of namedOld) {
+    await pool.query(`INSERT INTO heartbeats (instance_id, day, payload, received_at) VALUES ($1, current_date - 80, '{}', now() - interval '2 days')`, [id]);
+    await pool.query('INSERT INTO instance_meta (instance_id, first_seen, last_seen) VALUES ($1, current_date - 80, current_date - 80)', [id]);
+    await errorRow(id, 81);
+  }
+  const errorsOnly = crypto.randomUUID();
+  await errorRow(errorsOnly, 5);
+
+  await migrate();
+  const daysAgo = async (ids: string[]) => (await pool.query<{ ago: number }>(
+    `SELECT (now() AT TIME ZONE 'UTC')::date - first_day AS ago FROM instance_arrivals WHERE instance_id = ANY($1::uuid[])`, [ids])).rows.map((r) => r.ago);
+  assert.deepEqual(await daysAgo(namedOld), [2, 2, 2], 'the first day came from error counts stored under a day the heartbeat named');
+  assert.deepEqual(await daysAgo([errorsOnly]), [3]);
+});

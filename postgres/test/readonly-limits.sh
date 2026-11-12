@@ -7,7 +7,10 @@
 #
 # 1. A statement of a read-only login ends within a minute even when it catches the cancel the
 #    query-watchdog sends (PL/pgSQL can trap query_canceled; DO blocks are open to every role).
-# Exit 0 when it holds, 1 otherwise.
+# 2. A session of a read-only login that starts while the grants file runs (every deploy runs it
+#    twice on a live stack) is admitted and has the login's limits: temp_file_limit, the
+#    statement timeout default and the read-only default.
+# Exit 0 when both hold, 1 otherwise.
 set -u
 ROOT="$(cd "${1:?usage: readonly-limits.sh <repo root>}" && pwd)"
 P="${NAME_PREFIX:-readonly-limits}"
@@ -37,6 +40,13 @@ sleep 60
 n=$(docker exec "$PG" psql -X -At -U postgres -c "SELECT count(*) FROM pg_stat_activity WHERE usename = 'grafana_telemetry_ro' AND state = 'active'")
 if [ "$n" = 0 ]; then echo "  ok    it was ended within 60 s"; else echo "  FAIL  it still runs after 60 s ($(docker logs "$WD" 2>&1 | grep -c 'cancelled statements') cancels by the watchdog had no effect)"; fail=1; fi
 docker exec "$PG" psql -X -At -U postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'grafana_telemetry_ro'" >/dev/null
+
+echo "== 2. sessions that start while the grants file runs"
+docker exec -d "$PG" sh -c ': > /tmp/s; for i in $(seq 1 300); do psql -X -q -At -h 127.0.0.1 -U grafana_telemetry_ro -d telemetry -c "SELECT current_setting('"'temp_file_limit'"') || '"' '"' || current_setting('"'statement_timeout'"') || '"' '"' || current_setting('"'default_transaction_read_only'"')" >> /tmp/s 2>&1 || echo refused >> /tmp/s; done; touch /tmp/s-done'
+for _ in $(seq 1 10); do docker exec -i "$PG" psql -X -q -v ON_ERROR_STOP=1 -U postgres -d postgres < "$ROOT/postgres/grafana-read-only.sql" >/dev/null 2>&1; done
+for _ in $(seq 1 120); do docker exec "$PG" test -f /tmp/s-done && break; sleep 1; done
+bad=$(docker exec "$PG" sh -c 'grep -vcx "100MB 15s on" /tmp/s')
+if [ "$bad" = 0 ]; then echo "  ok    every session had the limits"; else echo "  FAIL  $bad of 300 sessions were refused or started without the limits: $(docker exec "$PG" sh -c 'grep -vx "100MB 15s on" /tmp/s | grep -v "^DETAIL" | sed -E "s/port [0-9]+/port N/; s/\"[0-9.]+\"/N/" | sort | uniq -c | tr "\n" ";"')"; fail=1; fi
 
 echo
 [ "$fail" = 0 ] && echo "all ok" || echo "FAILED"

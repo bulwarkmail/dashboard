@@ -23,7 +23,8 @@
 -- the session set, and ends the session of one still running at 30.
 --
 -- Idempotent: run it as the superuser any number of times, before or after
--- the apps created their tables. A new data directory runs it after init.sql
+-- the apps created their tables, also while Grafana uses the logins: each
+-- part runs in one transaction. A new data directory runs it after init.sql
 -- (mounted as 20-grafana-read-only.sql), and deploy.sh runs it on every
 -- deploy. It stops, naming them, when a database holds a schema other than
 -- public or a function that runs as its owner: the apps make neither. By
@@ -47,6 +48,12 @@ SELECT :'dashboard_ro_password' = '' OR :'umami_ro_password' = '' OR :'telemetry
   \echo 'Set POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD, POSTGRES_GRAFANA_UMAMI_RO_PASSWORD, POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD and POSTGRES_QUERY_WATCHDOG_PASSWORD in the postgres container.'
   DO $$ BEGIN RAISE EXCEPTION 'a Grafana read-only or watchdog password is empty'; END $$;
 \endif
+
+-- The roles and what they may do with the databases, in one transaction: a
+-- session that starts while this runs (deploy.sh runs it on a live stack)
+-- sees the logins as they were or as they are after it, never reset halfway,
+-- without their limits or without CONNECT.
+BEGIN;
 
 -- The roles: init.sql creates them in a new data directory, this in an
 -- existing one.
@@ -114,6 +121,8 @@ GRANT CONNECT ON DATABASE dashboard TO grafana_dashboard_ro;
 GRANT CONNECT ON DATABASE umami     TO grafana_umami_ro;
 GRANT CONNECT ON DATABASE telemetry TO grafana_telemetry_ro;
 GRANT CONNECT ON DATABASE postgres  TO grafana_query_watchdog;
+
+COMMIT;
 
 -- In each of the three databases, first the same check and clean-up: stop
 -- when a schema other than public or a function that runs as its owner is

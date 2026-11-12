@@ -63,7 +63,9 @@ their own database, take at most 10 connections and write at most 100 MB of temp
 query (`temp_file_limit`, which only a superuser can change). Nothing in the three databases is
 granted to PUBLIC. `postgres/grafana-read-only.sql` sets all of this. It is idempotent: a new data
 directory runs it after `init.sql`, and `deploy.sh` runs it on every deploy, right after Postgres is
-up and again after the apps started. Each run also puts back the logins' passwords from `.env`
+up and again after the apps started. Each part runs in one transaction, so a Grafana session that
+starts during a deploy gets the logins as they were or as they are after it, always with their
+limits. Each run also puts back the logins' passwords from `.env`
 (`POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD`, `POSTGRES_GRAFANA_UMAMI_RO_PASSWORD`,
 `POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD`; `deploy.sh` generates missing ones) and their settings:
 Postgres lets every role change its own password and session defaults, so a Viewer can break its

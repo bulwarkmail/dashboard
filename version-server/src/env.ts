@@ -29,17 +29,24 @@ function num(name: string, fallback: number): number {
 
 /** The longest delay a Node timer holds; setInterval runs anything longer after 1 ms. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
+/**
+ * The shortest refresh interval: 2 minutes. Each refresh asks GitHub once, so both refreshes at the
+ * minimum make 60 requests an hour, GitHub's limit for an address without a token.
+ */
+const MIN_INTERVAL_MS = 2 * 60 * 1000;
 
 /**
- * A refresh interval from the environment: a positive number of milliseconds a timer holds. Any
- * other value that is set (0, a negative number, a blank value, text, too long) gives `fallback`,
- * with one log line naming the setting and the value used.
+ * A refresh interval from the environment: a whole number of milliseconds in plain decimal digits
+ * (white space around it allowed; no sign, exponent, hex or fraction) from MIN_INTERVAL_MS to what a
+ * timer holds. Any other value that is set gives `fallback`, with one log line naming the setting and
+ * the value used.
  */
 function interval(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined) return fallback;
-  const n = raw.trim() === '' ? NaN : Number(raw);
-  if (Number.isFinite(n) && n > 0 && n <= MAX_TIMER_MS) return n;
+  const digits = /^\s*(\d+)\s*$/.exec(raw);
+  const n = digits ? Number(digits[1]) : NaN;
+  if (n >= MIN_INTERVAL_MS && n <= MAX_TIMER_MS) return n;
   // The same line format as log.ts, which env.ts does not import.
   process.stdout.write(`${JSON.stringify({ ts: new Date().toISOString(), level: 'warn', msg: 'setting_ignored', setting: name, given: raw.slice(0, 40), used: fallback })}\n`);
   return fallback;

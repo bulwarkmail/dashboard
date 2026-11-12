@@ -47,15 +47,17 @@ function warn(msg: string, fields: Record<string, unknown>): void {
 }
 
 /**
- * A limit or interval from the environment: a positive number up to `max`. Any other value that is
- * set (0, a negative number, a blank value, text, more than the timer or the counter holds) gives
- * `fallback`, with one log line naming the setting and the value used. No value switches a limit off.
+ * A limit or interval from the environment: a whole number in plain decimal digits (white space
+ * around it allowed; no sign, exponent, hex or fraction) from `min` to `max`. Any other value that is
+ * set gives `fallback`, with one log line naming the setting and the value used. No value switches a
+ * limit off.
  */
-function limit(name: string, fallback: number, max: number): number {
+function limit(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name];
   if (raw === undefined) return fallback;
-  const n = raw.trim() === '' ? NaN : Number(raw);
-  if (Number.isFinite(n) && n > 0 && n <= max) return n;
+  const digits = /^\s*(\d+)\s*$/.exec(raw);
+  const n = digits ? Number(digits[1]) : NaN;
+  if (n >= min && n <= max) return n;
   warn('collector.setting_ignored', { setting: name, given: raw.slice(0, 40), used: fallback });
   return fallback;
 }
@@ -80,13 +82,15 @@ export const env = {
   pgUser: process.env.PG_USER || 'dashboard',
   pgPassword: required('POSTGRES_DASHBOARD_PASSWORD'),
   pgDatabase: process.env.PG_DATABASE || 'dashboard',
-  fastIntervalMs: limit('COLLECTOR_INTERVAL_FAST_MS', 15 * 60 * 1000, MAX_TIMER_MS),
-  slowIntervalMs: limit('COLLECTOR_INTERVAL_SLOW_MS', 24 * 60 * 60 * 1000, MAX_TIMER_MS),
+  // Minimums: an interval of at least a minute, a scan time of at least a second, at least 1 MiB and
+  // one entry unpacked; anything smaller would run a job without pause or fail every repository.
+  fastIntervalMs: limit('COLLECTOR_INTERVAL_FAST_MS', 15 * 60 * 1000, 60_000, MAX_TIMER_MS),
+  slowIntervalMs: limit('COLLECTOR_INTERVAL_SLOW_MS', 24 * 60 * 60 * 1000, 60_000, MAX_TIMER_MS),
   reposDir: process.env.COLLECTOR_REPOS_DIR || '/opt/bulwark-dashboard/data/repos',
   // Limits of one repository's git scan (see git.ts).
-  scanDeadlineMs: limit('COLLECTOR_SCAN_DEADLINE_MS', 30 * 60 * 1000, MAX_TIMER_MS),
-  unpackMaxBytes: limit('COLLECTOR_UNPACK_MAX_BYTES', 1024 * 1024 * 1024, MAX_UNPACK_BYTES),
-  unpackMaxEntries: limit('COLLECTOR_UNPACK_MAX_ENTRIES', 200_000, Number.MAX_SAFE_INTEGER),
+  scanDeadlineMs: limit('COLLECTOR_SCAN_DEADLINE_MS', 30 * 60 * 1000, 1000, MAX_TIMER_MS),
+  unpackMaxBytes: limit('COLLECTOR_UNPACK_MAX_BYTES', 1024 * 1024 * 1024, 1024 * 1024, MAX_UNPACK_BYTES),
+  unpackMaxEntries: limit('COLLECTOR_UNPACK_MAX_ENTRIES', 200_000, 1, Number.MAX_SAFE_INTEGER),
   runOnce: process.argv.includes('--once'),
   ghcrPackages: ghcrPackages(
     process.env.GHCR_PACKAGES

@@ -76,13 +76,13 @@ test('with Postgres: invented versions from single ids neither replace the real 
 
 test('with Postgres: release-shaped versions from new ids come after what installations known for days run', { skip: !withPg && 'set ROLLUP_TEST_PG=1 and point PG_PORT at a throwaway Postgres' }, async () => {
   await migrate();
-  await pool.query('TRUNCATE heartbeats, instance_meta, new_instance_counts, pending_heartbeats');
+  await pool.query('TRUNCATE heartbeats, instance_meta, new_instance_counts, pending_heartbeats, instance_arrivals');
 
   // Installations known for ten days.
   for (let i = 0; i < 30; i++) await post(heartbeat('1.21.1'));
   for (let i = 0; i < 4; i++) await post(heartbeat('1.20.0'));
   for (let i = 0; i < 3; i++) await post(heartbeat('1.21.0-beta.2'));
-  await pool.query("UPDATE instance_meta SET first_seen = current_date - 10");
+  await pool.query("UPDATE instance_arrivals SET first_day = current_date - 10");
 
   // Today: 30 new ids, each with a high version of the right shape, and two new ids that share one.
   const single = Array.from({ length: 30 }, (_, i) => `${900 + i}.0.0`);
@@ -94,4 +94,37 @@ test('with Postgres: release-shaped versions from new ids come after what instal
   assert.deepEqual(table.filter((v) => single.includes(v)), [], 'a version only one new id reports is on the public table');
   // Two new installations with the same version are shown, after the known ones.
   assert.equal(table.indexOf('999.9.9'), 3);
+});
+
+// "Known for more than a day" counts from the day the collector first stored an id, by its own
+// clock. A heartbeat sent before midnight names the day before the one it arrives on, so ids that
+// arrived yesterday naming the day before are not known for more than a day yet; ids that arrived
+// the day before are. Days are taken from the end of the panel's window, so this holds at any hour.
+test('with Postgres: ids that arrived yesterday naming the day before don\'t count as known for more than a day yet', { skip: !withPg && 'set ROLLUP_TEST_PG=1 and point PG_PORT at a throwaway Postgres' }, async () => {
+  await migrate();
+  await pool.query('TRUNCATE heartbeats, instance_meta, new_instance_counts, pending_heartbeats, instance_arrivals');
+  const end = (await pool.query<{ d: string }>("SELECT to_char((now() - interval '1 hour')::date, 'YYYY-MM-DD') AS d")).rows[0].d;
+  const day = (offset: number) => new Date(Date.parse(`${end}T00:00:00Z`) + offset * 86_400_000).toISOString().slice(0, 10);
+  /** A heartbeat arriving at noon UTC, `offset` days from the window's end, sent at 23:00 the day before. */
+  const arriving = async (version: string, offset: number) => {
+    const now = Date.parse(`${day(offset)}T12:00:00Z`);
+    const clean = validate({ ...heartbeat(version), ts: `${day(offset - 1)}T23:00:00.000Z` }, now);
+    assert.ok(clean && clean.ts.startsWith(day(offset - 1)), 'the heartbeat keeps the day before its arrival');
+    await storeHeartbeat(clean, now);
+  };
+
+  // Installations that arrived five days before the window's end.
+  for (let i = 0; i < 30; i++) await arriving('1.21.1', -5);
+  for (let i = 0; i < 4; i++) await arriving('1.20.0', -5);
+  for (let i = 0; i < 3; i++) await arriving('1.21.0-beta.2', -5);
+  // Five that arrived two days before it, all on one version: known for more than a day.
+  for (let i = 0; i < 5; i++) await arriving('1.22.0', -2);
+  // Three versions of five ids each that arrived the day before the window's end.
+  const yesterday = ['9001.0.0', '9002.0.0', '9003.0.0'];
+  for (const version of yesterday) for (let i = 0; i < 5; i++) await arriving(version, -1);
+
+  const table = await shown();
+  assert.deepEqual(table.slice(0, 4), ['1.21.1', '1.22.0', '1.20.0', '1.21.0-beta.2'],
+    `ids that arrived yesterday rank as known: ${table.join(', ')}`);
+  assert.deepEqual(table.slice(4), [...yesterday].reverse());
 });

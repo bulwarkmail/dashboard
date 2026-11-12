@@ -4,8 +4,13 @@ import { log } from './log.js';
 import { promoteInstance } from './heartbeat.js';
 
 // Deferred heartbeats (pending_heartbeats): new instance ids past the day's
-// limit wait here instead of being dropped, so an honest new installation is
-// late on a busy day, never lost. Each UTC day up to TELEMETRY_MAX_NEW_INSTANCES_PER_DAY
+// limit wait here instead of being dropped, one row per id and heartbeat day,
+// counted once, without error counts, for at most PENDING_RETENTION_DAYS
+// (rollup.ts). An honest new installation is late on a busy day. But once
+// TELEMETRY_MAX_DEFERRED_PER_DAY (5,000) new ids wait from one day, on top of
+// the TELEMETRY_MAX_NEW_INSTANCES_PER_DAY stored at once, further new
+// installations of that day are not counted; they get in on a later day with
+// room. Each UTC day up to TELEMETRY_MAX_NEW_INSTANCES_PER_DAY
 // waiting ids are counted, on top of the day's own new ids:
 //   - first ids that came back on another day (an installation sends a heartbeat
 //     every day; a made-up id has to be sent again on purpose),

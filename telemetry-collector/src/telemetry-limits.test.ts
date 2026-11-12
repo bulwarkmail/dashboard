@@ -16,6 +16,7 @@ const { env } = await import('./env.js');
 const { log } = await import('./log.js');
 const { admitErrorSender, storeHeartbeat } = await import('./heartbeat.js');
 const { storeInstantErrors } = await import('./instant.js');
+const { runRollup } = await import('./rollup.js');
 const { validate, validateErrorBatch } = await import('./validate.js');
 
 const withPg = process.env.ROLLUP_TEST_PG === '1';
@@ -126,4 +127,65 @@ test('with Postgres: an unknown error sender takes one place for new ids, and a 
   assert.equal(stored.rows[0].n, 1);
   const left = await pool.query<{ n: number }>('SELECT count(*)::int AS n FROM pending_heartbeats WHERE instance_id = $1', [waiting]);
   assert.equal(left.rows[0].n, 0);
+});
+
+// The waiting list exists so that an honest new installation is late on a busy day instead of
+// lost (pending.ts). Its daily limit bounds rows, one per id and day; a single id sending the same
+// heartbeat again and again adds no row and must not use up the places of other ids.
+test('with Postgres: one id sending again and again past the limit takes one place in the waiting list, not all of them', { skip }, async (t) => {
+  await migrate();
+  await pool.query('TRUNCATE heartbeats, instance_meta, new_instance_counts, pending_heartbeats');
+  const saved = { max: env.maxNewInstancesPerDay, deferred: env.maxDeferredPerDay };
+  env.maxNewInstancesPerDay = 3;
+  env.maxDeferredPerDay = 5;
+  t.after(() => { env.maxNewInstancesPerDay = saved.max; env.maxDeferredPerDay = saved.deferred; });
+  t.mock.method(log, 'warn', () => {});
+  const now = Date.now();
+  const send = (id: string) => storeHeartbeat(validate(heartbeat(id), now)!, now);
+
+  for (let i = 0; i < 3; i++) assert.equal(await send(crypto.randomUUID()), 'stored');
+  const repeater = crypto.randomUUID();
+  for (let i = 0; i < 10; i++) await send(repeater);
+  const pending = await pool.query<{ n: number }>('SELECT count(*)::int AS n FROM pending_heartbeats');
+  assert.equal(pending.rows[0].n, 1, 'one id, one day: one waiting row');
+
+  const honest = crypto.randomUUID();
+  assert.equal(await send(honest), 'deferred', 'a new installation was dropped after one other id sent ten times');
+});
+
+// A waiting heartbeat is kept without its error counts, so a waiting row stays a few hundred bytes
+// whatever the heartbeat carried, and waiting rows go after a week.
+test('with Postgres: a waiting heartbeat is kept without its error counts, for a week', { skip }, async (t) => {
+  await migrate();
+  await pool.query('TRUNCATE heartbeats, instance_meta, new_instance_counts, pending_heartbeats, error_counts');
+  const saved = env.maxNewInstancesPerDay;
+  env.maxNewInstancesPerDay = 0;
+  t.after(() => { env.maxNewInstancesPerDay = saved; });
+  t.mock.method(log, 'warn', () => {});
+  t.mock.method(log, 'info', () => {});
+  const DAY = 86_400_000;
+  const now = Date.now();
+  const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+  // About the largest schema 2 heartbeat a 64 KiB body holds: 50 errors of five frames each.
+  const errors = Array.from({ length: 50 }, (_, i) => ({
+    name: 'TypeError', fingerprint: (i + 1).toString(16).padStart(16, '0'), version: '1.21.1', count: '201+', days: 7,
+    frames: Array.from({ length: 5 }, () => ({ path: `/_next/static/chunks/${crypto.randomBytes(48).toString('hex')}.js`, line: 1234567, col: 7654321, debug_id: crypto.randomUUID() })),
+  }));
+  const body = { ...heartbeat(crypto.randomUUID(), new Date(now).toISOString()), schema: '2', errors };
+  assert.ok(JSON.stringify(body).length < 64 * 1024);
+  assert.equal(await storeHeartbeat(validate(body, now)!, now), 'deferred');
+  const row = await pool.query<{ bytes: number; errors: boolean }>("SELECT pg_column_size(heartbeat)::int AS bytes, heartbeat ? 'errors' AS errors FROM pending_heartbeats");
+  assert.ok(row.rows[0].bytes < 1000, `a waiting row takes ${row.rows[0].bytes} bytes`);
+  assert.equal(row.rows[0].errors, false, 'the waiting row holds the error counts');
+
+  // A week on, the rollup deletes it; a row of six days ago stays.
+  const [old, recent] = [crypto.randomUUID(), crypto.randomUUID()];
+  await pool.query("INSERT INTO pending_heartbeats (instance_id, day, heartbeat) VALUES ($1, $2, '{}'), ($3, $4, '{}')",
+    [old, dayOf(now - 8 * DAY), recent, dayOf(now - 6 * DAY)]);
+  await runRollup(now);
+  const left = await pool.query<{ id: string }>('SELECT instance_id::text AS id FROM pending_heartbeats');
+  const ids = left.rows.map((r) => r.id);
+  assert.ok(ids.includes(recent), 'a row of six days ago was deleted');
+  assert.ok(!ids.includes(old), 'a row of eight days ago is still waiting');
 });

@@ -260,7 +260,7 @@ test('with Postgres: only the first new ids of a day are stored at once, known i
   assert.equal(waiting.rows[0].n, 2);
 });
 
-test('with Postgres: a deferred heartbeat is counted later, never lost, and the day\'s budget holds', { skip: !withPg && 'set ROLLUP_TEST_PG=1 and point PG_PORT at a throwaway Postgres' }, async (t) => {
+test('with Postgres: a deferred heartbeat is counted later, and the day\'s budget holds', { skip: !withPg && 'set ROLLUP_TEST_PG=1 and point PG_PORT at a throwaway Postgres' }, async (t) => {
   await migrate();
   await pool.query('TRUNCATE heartbeats, instance_meta, new_instance_counts, pending_heartbeats, error_counts');
   const max = env.maxNewInstancesPerDay;
@@ -279,7 +279,8 @@ test('with Postgres: a deferred heartbeat is counted later, never lost, and the 
   const days = async (instance_id: string) => (await pool.query<{ d: string }>(
     "SELECT to_char(day, 'YYYY-MM-DD') AS d FROM heartbeats WHERE instance_id = $1 ORDER BY day", [instance_id])).rows.map((r) => r.d);
 
-  // Day 0: three new ids are stored, five wait (the last one with error counts).
+  // Day 0: three new ids are stored, five wait (the last one a schema 2 heartbeat, which waits
+  // without its error counts).
   const [a, b, c] = [id(), id(), id()];
   const waiting = [id(), id(), id(), id(), id()];
   for (const x of [a, b, c]) assert.equal(await send(x, day0), 'stored');
@@ -305,7 +306,7 @@ test('with Postgres: a deferred heartbeat is counted later, never lost, and the 
   assert.deepEqual(await days(waiting[3]), [dayOf(day0), dayOf(day1)]);
   assert.deepEqual(await days(waiting[4]), [dayOf(day0)]);
   const errors = await pool.query<{ n: number }>('SELECT count(*)::int AS n FROM error_counts WHERE instance_id = $1', [waiting[4]]);
-  assert.equal(errors.rows[0].n, 1, 'the deferred heartbeat\'s error counts were lost');
+  assert.equal(errors.rows[0].n, 0, 'a waiting heartbeat kept its error counts');
   const left = await pool.query<{ n: number }>('SELECT count(*)::int AS n FROM pending_heartbeats');
   assert.equal(left.rows[0].n, 0);
   const promoted = await pool.query<{ d: string; promoted: number }>("SELECT to_char(day, 'YYYY-MM-DD') AS d, promoted FROM new_instance_counts ORDER BY day");

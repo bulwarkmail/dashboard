@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS expired_instances (
 -- instance ids the collector had not seen before. Those of the first
 -- TELEMETRY_MAX_NEW_INSTANCES_PER_DAY are stored, the next
 -- TELEMETRY_MAX_DEFERRED_PER_DAY heartbeats are deferred, the count goes on
--- past that; an error batch past the first ones is refused and not counted.
+-- past that; an error batch past the first ones is refused and not counted,
+-- and neither is a heartbeat of an id already waiting for that heartbeat's day.
 -- `promoted`: deferred ids counted that day (pending.ts). Only counts, no
 -- instance_id.
 CREATE TABLE IF NOT EXISTS new_instance_counts (
@@ -49,8 +50,8 @@ CREATE TABLE IF NOT EXISTS new_instance_counts (
 ALTER TABLE new_instance_counts ADD COLUMN IF NOT EXISTS promoted integer NOT NULL DEFAULT 0;
 
 -- Heartbeats of new ids past the day's limit, held until pending.ts counts
--- them (one row per instance and day, the validated heartbeat with its error
--- counts). Deleted after the retention window like heartbeats.
+-- them (one row per instance and day, the validated heartbeat without its
+-- error counts). Deleted after 7 days (rollup.ts).
 CREATE TABLE IF NOT EXISTS pending_heartbeats (
   instance_id        uuid        NOT NULL,
   day                date        NOT NULL,

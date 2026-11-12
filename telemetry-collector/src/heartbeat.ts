@@ -46,31 +46,39 @@ export async function admitErrorSender(instanceId: string, now = Date.now()): Pr
   return true;
 }
 
-type Admission = 'known' | 'new' | 'defer' | 'drop';
+type Admission = 'known' | 'new' | 'waiting' | 'defer' | 'drop';
 
 /**
- * What happens to a heartbeat of this instance id. An id the collector knows
- * (a heartbeat, instance_meta row or error counts) is always stored. Of the
- * ids it has not seen, those of the first `maxNewInstancesPerDay` heartbeats
- * and error batches of the UTC day they arrive on are stored, the next
- * `maxDeferredPerDay` heartbeats are deferred (pending_heartbeats, counted
- * later by pending.ts), the rest dropped; each step logs one warning a day.
- * The count lives in new_instance_counts, so a restart doesn't reset it.
+ * What happens to a heartbeat of this instance id for `heartbeatDay`. An id
+ * the collector knows (a heartbeat, instance_meta row or error counts) is
+ * always stored. An id already waiting for that day (pending_heartbeats) is
+ * neither counted nor stored again. Of the other ids it has not seen, those
+ * of the first `maxNewInstancesPerDay` heartbeats and error batches of the UTC
+ * day they arrive on are stored, the next `maxDeferredPerDay` heartbeats are
+ * deferred (pending_heartbeats, counted later by pending.ts), the rest
+ * dropped; each step logs one warning a day. The count lives in
+ * new_instance_counts, so a restart doesn't reset it.
  */
-async function admit(instanceId: string, now: number): Promise<Admission> {
+async function admit(instanceId: string, heartbeatDay: string, now: number): Promise<Admission> {
   const day = new Date(now).toISOString().slice(0, 10);
-  const { rows } = await pool.query<{ count: number }>(
+  const { rows } = await pool.query<{ known: boolean; count: number | null }>(
     `WITH known AS (
        ${KNOWN_ID}
+     ), waiting AS (
+       SELECT 1 FROM pending_heartbeats WHERE instance_id = $1 AND day = $3
+     ), counted AS (
+       INSERT INTO new_instance_counts (day, count)
+       SELECT $2, 1 WHERE NOT EXISTS (SELECT 1 FROM known) AND NOT EXISTS (SELECT 1 FROM waiting)
+       ON CONFLICT (day) DO UPDATE SET count = new_instance_counts.count + 1
+       RETURNING count
      )
-     INSERT INTO new_instance_counts (day, count)
-     SELECT $2, 1 WHERE NOT EXISTS (SELECT 1 FROM known)
-     ON CONFLICT (day) DO UPDATE SET count = new_instance_counts.count + 1
-     RETURNING count`,
-    [instanceId, day],
+     SELECT EXISTS (SELECT 1 FROM known) AS known, (SELECT count FROM counted) AS count`,
+    [instanceId, day, heartbeatDay],
   );
-  const count = rows[0]?.count;
-  if (count === undefined) return 'known';
+  const row = rows[0];
+  if (!row || row.known) return 'known';
+  const count = row.count;
+  if (count === null) return 'waiting';
   const max = env.maxNewInstancesPerDay;
   if (count <= max) return 'new';
   if (count === max + 1) log.warn('heartbeat.new_instances_deferred', { day, max });
@@ -81,18 +89,22 @@ async function admit(instanceId: string, now: number): Promise<Admission> {
 
 /**
  * Store one validated heartbeat, arriving at `now`: 'stored', 'deferred' (a
- * new id past the day's limit; pending.ts counts it later) or 'dropped' (past
- * the deferred limit too). A new id that had deferred heartbeats gets them
- * stored with this one.
+ * new id past the day's limit, or one already waiting for that day; pending.ts
+ * counts it later) or 'dropped' (past the deferred limit too). A new id that
+ * had deferred heartbeats gets them stored with this one.
  */
 export async function storeHeartbeat(clean: CleanHeartbeat | CleanHeartbeatV2, now = Date.now()): Promise<'stored' | 'deferred' | 'dropped'> {
-  const admission = await admit(clean.instance_id, now);
+  const day = clean.ts.slice(0, 10);
+  const admission = await admit(clean.instance_id, day, now);
   if (admission === 'drop') return 'dropped';
+  if (admission === 'waiting') return 'deferred';
   if (admission === 'defer') {
+    // Without its error counts: a waiting row stays a few hundred bytes.
+    const { errors: _errors, ...waiting } = clean as CleanHeartbeatV2;
     await pool.query(
       `INSERT INTO pending_heartbeats (instance_id, day, heartbeat) VALUES ($1, $2, $3::jsonb)
-       ON CONFLICT (instance_id, day) DO UPDATE SET heartbeat = EXCLUDED.heartbeat`,
-      [clean.instance_id, clean.ts.slice(0, 10), JSON.stringify(clean)],
+       ON CONFLICT (instance_id, day) DO NOTHING`,
+      [clean.instance_id, day, JSON.stringify(waiting)],
     );
     return 'deferred';
   }
@@ -101,12 +113,15 @@ export async function storeHeartbeat(clean: CleanHeartbeat | CleanHeartbeatV2, n
   return 'stored';
 }
 
+/** A deferred heartbeat as pending_heartbeats holds it: without its error counts. */
+type WaitingHeartbeat = Omit<CleanHeartbeatV2, 'errors'> & { errors?: CleanHeartbeatV2['errors'] };
+
 /**
  * Store an instance's deferred heartbeats under their own days, oldest first,
  * and remove them from pending_heartbeats. Returns how many there were.
  */
 export async function promoteInstance(instanceId: string): Promise<number> {
-  const { rows } = await pool.query<{ day: string; heartbeat: CleanHeartbeat | CleanHeartbeatV2 }>(
+  const { rows } = await pool.query<{ day: string; heartbeat: CleanHeartbeat | WaitingHeartbeat }>(
     `SELECT to_char(day, 'YYYY-MM-DD') AS day, heartbeat FROM pending_heartbeats
       WHERE instance_id = $1 ORDER BY day`,
     [instanceId],
@@ -123,11 +138,12 @@ export async function promoteInstance(instanceId: string): Promise<number> {
  * (v2's `errors` go to error_counts instead), so every panel and the rollup
  * read v1 and v2 alike. A v2 heartbeat's error counts are for the UTC day
  * before the heartbeat's day; they replace what this instance sent for that
- * day before.
+ * day before. A deferred v2 heartbeat comes without them and touches no
+ * error counts.
  */
-async function writeHeartbeat(clean: CleanHeartbeat | CleanHeartbeatV2): Promise<void> {
+async function writeHeartbeat(clean: CleanHeartbeat | CleanHeartbeatV2 | WaitingHeartbeat): Promise<void> {
   const day = clean.ts.slice(0, 10);
-  const { errors, ...stored } = clean as CleanHeartbeatV2;
+  const { errors, ...stored } = clean as WaitingHeartbeat;
   // A desktop app is one person: the time it starts each day says when they work.
   const desktop = clean.platform === 'desktop';
   const receivedAt = desktop ? `date_trunc('day', now())` : 'now()';
@@ -156,7 +172,7 @@ async function writeHeartbeat(clean: CleanHeartbeat | CleanHeartbeatV2): Promise
        )`,
     [clean.instance_id, day],
   );
-  if (clean.schema !== '2') return;
+  if (clean.schema !== '2' || !errors) return;
 
   const errorDay = dayBefore(day);
   const client = await pool.connect();

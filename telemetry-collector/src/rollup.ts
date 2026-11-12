@@ -10,10 +10,14 @@ import { log } from './log.js';
 // 2. Update instance_meta first/last/days_seen.
 // 3. Delete heartbeats older than retentionDays, and instance_meta rows of
 //    instances last seen before then. Past the window only daily_rollups
-//    remain (no per-instance grain).
+//    remain (no per-instance grain). Deferred heartbeats go after
+//    PENDING_RETENTION_DAYS.
 
 /** How many finished days each run computes again. */
 const RECOMPUTED_DAYS = 2;
+
+/** How many days a deferred heartbeat waits in pending_heartbeats at most. */
+const PENDING_RETENTION_DAYS = 7;
 
 export async function runRollup(now = Date.now()): Promise<void> {
   const runId = (await pool.query(
@@ -66,7 +70,8 @@ export async function runRollup(now = Date.now()): Promise<void> {
     await pool.query(`DELETE FROM error_instant_forwards WHERE day < $1`, [cutoff]);
     log.info('rollup.deleted_error_counts', { cutoff, rows: delErrors.rowCount });
     await pool.query(`DELETE FROM new_instance_counts WHERE day < $1`, [cutoff]);
-    await pool.query(`DELETE FROM pending_heartbeats WHERE day < $1`, [cutoff]);
+    const pendingCutoff = new Date(now - PENDING_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10);
+    await pool.query(`DELETE FROM pending_heartbeats WHERE day < $1`, [pendingCutoff]);
     await pool.query(`DELETE FROM error_forward_senders WHERE day < $1`, [cutoff]);
     // Instances not seen within the retention window lose their row too, so
     // no instance_id is kept past it. The same statement adds how many went to

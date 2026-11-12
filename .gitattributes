@@ -1,0 +1,4 @@
+# Shell scripts run in Linux containers (the query-watchdog service runs
+# postgres/watchdog/query-watchdog.sh from a mounted checkout) and on the Linux
+# host: LF in every checkout, also one made on Windows.
+*.sh text eol=lf

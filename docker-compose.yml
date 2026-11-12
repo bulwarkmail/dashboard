@@ -32,6 +32,8 @@ services:
 
   # Cancels statements of Grafana's read-only logins after 20 seconds, which
   # their own statement_timeout can't promise: a session can switch it off.
+  # One still running at 30 seconds (it caught the cancel) is ended with its
+  # session.
   query-watchdog:
     image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     container_name: bulwark-dashboard-query-watchdog

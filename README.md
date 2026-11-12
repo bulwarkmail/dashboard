@@ -78,9 +78,10 @@ docker compose exec -T postgres psql -X -q -U postgres -d postgres < postgres/gr
 A statement of these logins gets 15 seconds by default (`statement_timeout`), but a session can
 switch that off. The `query-watchdog` service (`postgres/watchdog/`) runs every 5 seconds as
 `grafana_query_watchdog` (password `POSTGRES_QUERY_WATCHDOG_PASSWORD`), a login that may only see
-sessions and cancel non-superuser statements: it cancels their statements after 20 seconds and ends
-their sessions idle in a transaction for more than 60, whatever the session set. A session can still
-raise its own `work_mem` for those 20 seconds.
+sessions, cancel non-superuser statements and end their sessions: it cancels their statements after
+20 seconds and ends their sessions idle in a transaction for more than 60, whatever the session set.
+A statement can catch the cancel (PL/pgSQL traps it), so one still running at 30 seconds is ended
+with its session. A session can still raise its own `work_mem` until then.
 
 `postgres/test/effective-privileges.sh` checks what the roles can do. It needs Docker and node,
 starts a throwaway `postgres:16-alpine` with `init.sql`, lets the owners create their tables (and

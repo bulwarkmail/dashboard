@@ -20,7 +20,7 @@
 -- environment, temp_file_limit (which only a superuser can change) bounds
 -- what one query writes to disk, and the query-watchdog service
 -- (postgres/watchdog/) cancels their statements after 20 seconds whatever
--- the session set.
+-- the session set, and ends the session of one still running at 30.
 --
 -- Idempotent: run it as the superuser any number of times, before or after
 -- the apps created their tables. A new data directory runs it after init.sql
@@ -88,7 +88,8 @@ ALTER ROLE grafana_umami_ro     SET default_transaction_read_only = on;
 ALTER ROLE grafana_telemetry_ro SET default_transaction_read_only = on;
 
 -- The watchdog (postgres/watchdog/): sees every session's state and may
--- cancel non-superuser statements, nothing else; it connects to postgres only.
+-- cancel non-superuser statements and end their sessions, nothing else; it
+-- connects to postgres only.
 ALTER ROLE grafana_query_watchdog WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 2 PASSWORD :'watchdog_password';
 ALTER ROLE grafana_query_watchdog SET statement_timeout = '5s';
 ALTER ROLE grafana_query_watchdog SET default_transaction_read_only = on;

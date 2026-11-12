@@ -99,8 +99,8 @@ server {
 </head>
 <body>
 <h1>Bulwark Telemetry</h1>
-<p>When a self-hosted Bulwark webmail instance opts in, it sends one anonymous heartbeat a day. That&#39;s the whole job.</p>
-<p>It sees no email, no users, no IPs, no hostnames. Just a software version, deployment shape, which features are on, and bucketed account counts.</p>
+<p>When a self-hosted Bulwark webmail instance opts in, it sends one anonymous heartbeat a day. Admins can also turn on error counts, a list of errors with rough counts.</p>
+<p>It never gets email, IP addresses, hostnames or anything that identifies a user. A heartbeat holds the software version, how the instance is deployed, which features are on and account counts in ranges.</p>
 <p>Details: <a href="https://bulwarkmail.org/docs/legal/privacy/telemetry">https://bulwarkmail.org/docs/legal/privacy/telemetry</a></p>
 </body>
 </html>';

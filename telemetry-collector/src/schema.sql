@@ -137,15 +137,17 @@ BEGIN
     -- Ids stored before this table existed get the latest day their first
     -- heartbeat or batch can have arrived on: the day of the earliest
     -- received_at of their heartbeats (when one of them arrived; a desktop's is
-    -- the start of that day), or two days after the earliest day of their error
-    -- counts (an error batch arrives on its day or the next, a heartbeat's
-    -- errors are for the day before a heartbeat that may arrive a day late),
-    -- never later than today.
+    -- the start of that day). An id without a heartbeat sent only error
+    -- batches, which name the day they arrive or the one before: two days
+    -- after the earliest day of its error counts, never later than today. The
+    -- error days of an id with heartbeats are left out: an older collector
+    -- stored a heartbeat's errors under a day the heartbeat named.
     INSERT INTO instance_arrivals (instance_id, first_day)
     SELECT instance_id, min(day) FROM (
       SELECT instance_id, (received_at AT TIME ZONE 'UTC')::date AS day FROM heartbeats
       UNION ALL
-      SELECT instance_id, LEAST(day + 2, (now() AT TIME ZONE 'UTC')::date) FROM error_counts
+      SELECT e.instance_id, LEAST(e.day + 2, (now() AT TIME ZONE 'UTC')::date) FROM error_counts e
+       WHERE NOT EXISTS (SELECT 1 FROM heartbeats h WHERE h.instance_id = e.instance_id)
       UNION ALL
       SELECT instance_id, (now() AT TIME ZONE 'UTC')::date FROM instance_meta
     ) seen

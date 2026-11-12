@@ -26,6 +26,13 @@ export const INSTANCE_INTERVAL_MS = 30_000;
 export const LIMITER_MAX_IDS = 10_000;
 
 /**
+ * Different errors (fingerprint and version) one instance's batches add per
+ * day of counts. The webmail itself counts at most 200 errors a day
+ * (lib/error-reporting/aggregate.ts), the desktop app's main process 50.
+ */
+export const MAX_ERRORS_PER_INSTANCE_DAY = 200;
+
+/**
  * Lets each instance through once per `intervalMs`. In memory, at most
  * `maxIds` ids: past that, the id let through longest ago is dropped. `prune`,
  * on a timer, drops the ids whose interval is over, so no id is kept past it;
@@ -100,7 +107,9 @@ async function instantShareLeft(now: number): Promise<number> {
 
 /**
  * Store a batch arriving at `now`: each error replaces what this instance
- * sent for it that day.
+ * sent for it that day. An error the instance hasn't sent for that day is
+ * added while the day has fewer than MAX_ERRORS_PER_INSTANCE_DAY of its rows;
+ * past that only errors it already sent are updated.
  */
 export async function storeInstantErrors(batch: CleanErrorBatch, now = Date.now()): Promise<void> {
   const client = await pool.connect();
@@ -109,14 +118,17 @@ export async function storeInstantErrors(batch: CleanErrorBatch, now = Date.now(
     for (const error of batch.errors) {
       await client.query(
         `INSERT INTO error_counts (instance_id, day, fingerprint, version, name, frames, count_bucket, days, message)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
+         SELECT $1::uuid, $2::date, $3, $4, $5, $6::jsonb, $7, $8::int, $9
+          WHERE EXISTS (SELECT 1 FROM error_counts
+                         WHERE instance_id = $1 AND day = $2 AND fingerprint = $3 AND version = $4)
+             OR (SELECT count(*) FROM error_counts WHERE instance_id = $1 AND day = $2) < $10
          ON CONFLICT (instance_id, day, fingerprint, version) DO UPDATE SET
            name = EXCLUDED.name,
            frames = EXCLUDED.frames,
            count_bucket = EXCLUDED.count_bucket,
            days = EXCLUDED.days,
            message = EXCLUDED.message`,
-        [batch.instance_id, batch.day, error.fingerprint, error.version, error.name, JSON.stringify(error.frames), error.count, error.days, error.message],
+        [batch.instance_id, batch.day, error.fingerprint, error.version, error.name, JSON.stringify(error.frames), error.count, error.days, error.message, MAX_ERRORS_PER_INSTANCE_DAY],
       );
     }
     await client.query('COMMIT');

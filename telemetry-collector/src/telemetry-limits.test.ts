@@ -333,3 +333,32 @@ test('with Postgres: ids stored before arrival days were kept get one from what 
   assert.equal(await firstDay(gone), undefined, 'an id with nothing left keeps its first day');
   assert.equal(await firstDay(crashes), expected.today);
 });
+
+// One instance's error batches add at most 200 different errors per day of counts, however often
+// it posts (once every 30 seconds, up to 50 errors each); the counts for errors it already sent
+// that day are always taken.
+test('with Postgres: one instance adds at most 200 different errors a day, and new counts for those still come in', { skip }, async () => {
+  await migrate();
+  await pool.query('TRUNCATE error_counts');
+  const now = Date.now();
+  const today = new Date(now).toISOString().slice(0, 10);
+  const fingerprint = (n: number) => n.toString(16).padStart(16, '0');
+  const batch = (instance: string, from: number, count = '1') => validateErrorBatch({ schema: '1', instance_id: instance, day: today, errors: Array.from({ length: 50 }, (_, i) => ({
+    name: 'TypeError', fingerprint: fingerprint(from + i), frames: [], version: '1.21.1', count, days: 1,
+  })) }, now)!;
+  const rows = async (instance: string, bucket?: string) => (await pool.query<{ n: number }>(
+    'SELECT count(*)::int AS n FROM error_counts WHERE instance_id = $1 AND ($2::text IS NULL OR count_bucket = $2)', [instance, bucket ?? null])).rows[0].n;
+
+  // Ten batches of 50 errors it hadn't sent: 200 are kept.
+  const id = crypto.randomUUID();
+  for (let i = 0; i < 10; i++) await storeInstantErrors(batch(id, 1 + i * 50), now);
+  assert.equal(await rows(id), 200, 'one instance\'s batches added more than 200 errors in a day');
+  // The first 50 reach a higher count bucket: taken, and still 200 rows.
+  await storeInstantErrors(batch(id, 1, '11-50'), now);
+  assert.equal(await rows(id, '11-50'), 50);
+  assert.equal(await rows(id), 200);
+  // Another instance has its own.
+  const other = crypto.randomUUID();
+  await storeInstantErrors(batch(other, 1), now);
+  assert.equal(await rows(other), 50);
+});

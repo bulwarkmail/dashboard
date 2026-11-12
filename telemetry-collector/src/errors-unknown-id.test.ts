@@ -6,8 +6,9 @@
 //
 // At most TELEMETRY_MAX_NEW_INSTANCES_PER_DAY instance ids the collector has not seen before are
 // stored per UTC day. That holds for both ways in: an instant error batch (POST /v1/errors) from an
-// id whose heartbeat the collector hasn't stored is answered and not stored. A known instance's
-// batch is always stored.
+// id the collector doesn't know takes one of those places, and past them it is refused with 429 (the
+// webmail and the desktop app keep it for a later try) and not stored. A known instance's batch is
+// always stored.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -68,7 +69,7 @@ after(async () => {
   if (withPg) await pool.end();
 });
 
-test('with Postgres: past the day\'s limit of new ids, an error batch from an id never seen is answered and not stored', { skip: !withPg && 'set ROLLUP_TEST_PG=1 and point PG_PORT at a throwaway Postgres' }, async () => {
+test('with Postgres: past the day\'s limit of new ids, an error batch from an id never seen is refused and not stored', { skip: !withPg && 'set ROLLUP_TEST_PG=1 and point PG_PORT at a throwaway Postgres' }, async () => {
   // The day's new ids, and one more that has to wait.
   const known = Array.from({ length: MAX }, () => crypto.randomUUID());
   for (const id of known) assert.equal(await post('/v1/heartbeat', heartbeat(id)), 200);
@@ -79,8 +80,8 @@ test('with Postgres: past the day\'s limit of new ids, an error batch from an id
 
   // The same caller turns to the other route with ids the collector has never seen.
   const strangers = Array.from({ length: 5 }, () => crypto.randomUUID());
-  for (const [i, id] of strangers.entries()) assert.equal(await post('/v1/errors', batch(id, 100 + i)), 200, 'answered like any other batch');
-  assert.equal(await post('/v1/errors', batch(waiting, 200)), 200);
+  for (const [i, id] of strangers.entries()) assert.equal(await post('/v1/errors', batch(id, 100 + i)), 429, 'refused in a way the senders keep the batch for later');
+  assert.equal(await post('/v1/errors', batch(waiting, 200)), 429);
   for (const id of [...strangers, waiting]) {
     assert.equal(await errorRows(id), 0, 'an instance id the collector never saw, past the day\'s limit, got rows in error_counts');
   }

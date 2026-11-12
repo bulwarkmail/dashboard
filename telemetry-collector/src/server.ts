@@ -4,7 +4,7 @@ import { log } from './log.js';
 import { migrate, pool } from './db.js';
 import { isJsonRequest, validate, validateErrorBatch } from './validate.js';
 import { runRollup } from './rollup.js';
-import { isKnownInstance, storeHeartbeat } from './heartbeat.js';
+import { admitErrorSender, storeHeartbeat } from './heartbeat.js';
 import { runForward } from './forward.js';
 import { promotePending } from './pending.js';
 import { INSTANCE_INTERVAL_MS, InstanceLimiter, forwardInstant, storeInstantErrors } from './instant.js';
@@ -82,9 +82,12 @@ const server = http.createServer(async (req, res) => {
       const clean = validateErrorBatch(body);
       if (!clean) return send(res, 400, { ok: false });
       if (!instanceLimiter.allow(clean.instance_id)) return send(res, 429, { ok: false });
-      // Only an instance whose heartbeat was stored sends error counts; any
-      // other id is answered alike and nothing is kept.
-      if (!(await isKnownInstance(clean.instance_id))) return send(res, 200, { ok: true });
+      // A desktop app with crash reports on and telemetry off sends error
+      // counts and never a heartbeat, and a new instance in instant mode sends
+      // them before its first heartbeat: an id the collector doesn't know takes
+      // one of the day's places for new ids. With none left, 429: the webmail
+      // and the desktop app keep the counts and send them again later.
+      if (!(await admitErrorSender(clean.instance_id))) return send(res, 429, { ok: false });
       await storeInstantErrors(clean);
       send(res, 200, { ok: true });
       // After the answer: Bugsink being slow or down never holds up an instance.

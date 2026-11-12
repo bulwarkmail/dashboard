@@ -45,7 +45,8 @@ test('a v1 heartbeat is stored as before and touches no error table', async (t) 
   // First whether the id is new (and may be stored today), then the two rows.
   assert.deepEqual(calls.map((c) => c.sql.split(' ').slice(0, 3).join(' ')), ['WITH known AS', 'INSERT INTO heartbeats', 'INSERT INTO instance_meta']);
   assert.equal(JSON.parse(heartbeatInsert(calls).params[2] as string).schema, '1');
-  assert.equal(calls.some((c) => c.sql.includes('error_counts')), false);
+  // The admission reads error_counts (an id with error counts is known); nothing writes it.
+  assert.equal(calls.some((c) => /^(INSERT INTO|DELETE FROM|UPDATE) error_counts/.test(c.sql)), false);
 });
 
 test('a v2 heartbeat stores its errors for the day before, replacing that day\'s rows', async (t) => {

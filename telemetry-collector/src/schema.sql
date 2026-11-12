@@ -35,10 +35,11 @@ CREATE TABLE IF NOT EXISTS expired_instances (
   count  integer NOT NULL
 );
 
--- Heartbeats per UTC day (the day they arrived) from instance ids the
--- collector had not seen before. Those of the first
+-- Heartbeats and error batches per UTC day (the day they arrived) from
+-- instance ids the collector had not seen before. Those of the first
 -- TELEMETRY_MAX_NEW_INSTANCES_PER_DAY are stored, the next
--- TELEMETRY_MAX_DEFERRED_PER_DAY are deferred, the count goes on past that.
+-- TELEMETRY_MAX_DEFERRED_PER_DAY heartbeats are deferred, the count goes on
+-- past that; an error batch past the first ones is refused and not counted.
 -- `promoted`: deferred ids counted that day (pending.ts). Only counts, no
 -- instance_id.
 CREATE TABLE IF NOT EXISTS new_instance_counts (

@@ -8,37 +8,60 @@ export function dayBefore(day: string): string {
   return new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
 }
 
-/** Whether the collector knows this instance id: it has a heartbeat or an instance_meta row. */
-export async function isKnownInstance(instanceId: string): Promise<boolean> {
-  const { rowCount } = await pool.query(
-    `SELECT 1 FROM heartbeats WHERE instance_id = $1
-     UNION ALL
-     SELECT 1 FROM instance_meta WHERE instance_id = $1
-     LIMIT 1`,
-    [instanceId],
+// The ids the collector knows: those with a heartbeat, an instance_meta row or
+// error counts.
+const KNOWN_ID = `SELECT 1 FROM heartbeats WHERE instance_id = $1
+       UNION ALL
+       SELECT 1 FROM instance_meta WHERE instance_id = $1
+       UNION ALL
+       SELECT 1 FROM error_counts WHERE instance_id = $1
+       LIMIT 1`;
+
+/**
+ * Whether an error batch of this instance id, arriving at `now`, may be
+ * stored. A known id may. An id the collector hasn't seen takes one of the
+ * day's places for new ids (new_instance_counts, shared with heartbeats) and
+ * is known from then on; its deferred heartbeats are stored with it. With no
+ * place left it may not, and the count stays as it is: a sender that tries
+ * again later takes nothing from the waiting heartbeats' places.
+ */
+export async function admitErrorSender(instanceId: string, now = Date.now()): Promise<boolean> {
+  const { rows } = await pool.query<{ known: boolean; count: number | null }>(
+    `WITH known AS (
+       ${KNOWN_ID}
+     ), placed AS (
+       INSERT INTO new_instance_counts (day, count)
+       SELECT $2, 1 WHERE NOT EXISTS (SELECT 1 FROM known)
+       ON CONFLICT (day) DO UPDATE SET count = new_instance_counts.count + 1
+        WHERE new_instance_counts.count < $3
+       RETURNING count
+     )
+     SELECT EXISTS (SELECT 1 FROM known) AS known, (SELECT count FROM placed) AS count`,
+    [instanceId, new Date(now).toISOString().slice(0, 10), env.maxNewInstancesPerDay],
   );
-  return (rowCount ?? 0) > 0;
+  const row = rows[0];
+  if (!row || row.known) return true;
+  if (row.count === null || row.count > env.maxNewInstancesPerDay) return false;
+  await promoteInstance(instanceId);
+  return true;
 }
 
 type Admission = 'known' | 'new' | 'defer' | 'drop';
 
 /**
  * What happens to a heartbeat of this instance id. An id the collector knows
- * (a heartbeat or instance_meta row) is always stored. Of the ids it has not
- * seen, those of the first `maxNewInstancesPerDay` heartbeats of the UTC day
- * they arrive on are stored, the next `maxDeferredPerDay` are deferred
- * (pending_heartbeats, counted later by pending.ts), the rest dropped; each
- * step logs one warning a day. The count lives in new_instance_counts, so a
- * restart doesn't reset it.
+ * (a heartbeat, instance_meta row or error counts) is always stored. Of the
+ * ids it has not seen, those of the first `maxNewInstancesPerDay` heartbeats
+ * and error batches of the UTC day they arrive on are stored, the next
+ * `maxDeferredPerDay` heartbeats are deferred (pending_heartbeats, counted
+ * later by pending.ts), the rest dropped; each step logs one warning a day.
+ * The count lives in new_instance_counts, so a restart doesn't reset it.
  */
 async function admit(instanceId: string, now: number): Promise<Admission> {
   const day = new Date(now).toISOString().slice(0, 10);
   const { rows } = await pool.query<{ count: number }>(
     `WITH known AS (
-       SELECT 1 FROM heartbeats WHERE instance_id = $1
-       UNION ALL
-       SELECT 1 FROM instance_meta WHERE instance_id = $1
-       LIMIT 1
+       ${KNOWN_ID}
      )
      INSERT INTO new_instance_counts (day, count)
      SELECT $2, 1 WHERE NOT EXISTS (SELECT 1 FROM known)

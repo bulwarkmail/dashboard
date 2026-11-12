@@ -42,9 +42,10 @@ export const env = {
   pgPassword: required('POSTGRES_TELEMETRY_PASSWORD'),
   pgDatabase: process.env.TELEMETRY_PG_DB || 'telemetry',
   retentionDays: num('TELEMETRY_RETENTION_DAYS', 90),
-  // Instance ids the collector has not seen before whose heartbeats are
-  // stored per UTC day; past that a new id's heartbeat is deferred
-  // (pending_heartbeats). As many deferred ids are counted per day.
+  // Instance ids the collector has not seen before whose heartbeats or error
+  // batches are stored per UTC day; past that a new id's heartbeat is deferred
+  // (pending_heartbeats) and its error batch refused with 429. As many
+  // deferred ids are counted per day.
   maxNewInstancesPerDay: num('TELEMETRY_MAX_NEW_INSTANCES_PER_DAY', 500),
   // Heartbeats from unknown ids deferred per UTC day past that; beyond this
   // they are dropped.

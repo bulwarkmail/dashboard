@@ -1,6 +1,6 @@
-// The collector's limit and interval settings: a value that is no positive number a timer or counter
-// holds gives the default, with one log line naming the setting. env.ts reads the environment once, so
-// each case loads it in a process of its own.
+// The collector's limit and interval settings: a value that is no whole number in plain decimal digits
+// from the setting's minimum to what the timer or counter holds gives the default, with one log line
+// naming the setting. env.ts reads the environment once, so each case loads it in a process of its own.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -10,11 +10,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 const SETTINGS = {
-  COLLECTOR_SCAN_DEADLINE_MS: { key: 'scanDeadlineMs', fallback: 30 * 60 * 1000, max: 2 ** 31 - 1 },
-  COLLECTOR_UNPACK_MAX_BYTES: { key: 'unpackMaxBytes', fallback: 1024 ** 3, max: 8 * 1024 ** 3 },
-  COLLECTOR_UNPACK_MAX_ENTRIES: { key: 'unpackMaxEntries', fallback: 200_000, max: Number.MAX_SAFE_INTEGER },
-  COLLECTOR_INTERVAL_FAST_MS: { key: 'fastIntervalMs', fallback: 15 * 60 * 1000, max: 2 ** 31 - 1 },
-  COLLECTOR_INTERVAL_SLOW_MS: { key: 'slowIntervalMs', fallback: 24 * 60 * 60 * 1000, max: 2 ** 31 - 1 },
+  COLLECTOR_SCAN_DEADLINE_MS: { key: 'scanDeadlineMs', fallback: 30 * 60 * 1000, min: 1000, max: 2 ** 31 - 1 },
+  COLLECTOR_UNPACK_MAX_BYTES: { key: 'unpackMaxBytes', fallback: 1024 ** 3, min: 1024 ** 2, max: 8 * 1024 ** 3 },
+  COLLECTOR_UNPACK_MAX_ENTRIES: { key: 'unpackMaxEntries', fallback: 200_000, min: 1, max: Number.MAX_SAFE_INTEGER },
+  COLLECTOR_INTERVAL_FAST_MS: { key: 'fastIntervalMs', fallback: 15 * 60 * 1000, min: 60_000, max: 2 ** 31 - 1 },
+  COLLECTOR_INTERVAL_SLOW_MS: { key: 'slowIntervalMs', fallback: 24 * 60 * 60 * 1000, min: 60_000, max: 2 ** 31 - 1 },
 } as const;
 type Name = keyof typeof SETTINGS;
 
@@ -35,7 +35,9 @@ function load(vars: Partial<Record<Name, string>>): { values: Record<string, num
 const all = (value: string) => Object.fromEntries(Object.keys(SETTINGS).map((name) => [name, value])) as Record<Name, string>;
 
 test('zero, a negative number, a blank value, text, NaN and Infinity give the default, each with one log line', () => {
-  for (const value of ['0', '-1', '-5000', '', ' ', 'abc', '30m', 'NaN', 'Infinity', '-Infinity', '1e400']) {
+  for (const value of ['0', '-1', '-5000', '', ' ', 'abc', '30m', 'NaN', 'Infinity', '-Infinity', '1e400',
+    // Numbers JavaScript reads, but not whole numbers in plain decimal digits.
+    '0.0001', '1.5', '0x10', '5e3', '+5000', '1_000', '5000.0', '2e9']) {
     const { values, lines } = load(all(value));
     for (const [name, s] of Object.entries(SETTINGS)) {
       assert.equal(values[s.key], s.fallback, `${name}=${JSON.stringify(value)} was taken as ${values[s.key]}`);
@@ -59,11 +61,19 @@ test('a value above what the timer or the counter holds gives the default', () =
   }
 });
 
-test('a positive value within the range is taken, without a log line', () => {
+test('a value just under the setting\'s minimum gives the default', () => {
   for (const [name, s] of Object.entries(SETTINGS)) {
-    for (const value of ['1', '2500', String(s.max)]) {
+    const { values, lines } = load({ [name]: String(s.min - 1) });
+    assert.equal(values[s.key], s.fallback, `${name}=${s.min - 1} was taken as ${values[s.key]}`);
+    assert.equal(lines.filter((l) => l.msg === 'collector.setting_ignored' && l.setting === name).length, 1);
+  }
+});
+
+test('a whole number from the minimum to the maximum is taken, without a log line', () => {
+  for (const [name, s] of Object.entries(SETTINGS)) {
+    for (const value of [String(s.min), String(s.max), String(s.min + 1), ` ${s.min} `, `\t${s.max}\n`, `00${s.min}`]) {
       const { values, lines } = load({ [name]: value });
-      assert.equal(values[s.key], Number(value), `${name}=${value}`);
+      assert.equal(values[s.key], Number(value.trim()), `${name}=${JSON.stringify(value)}`);
       assert.deepEqual(lines, []);
     }
   }

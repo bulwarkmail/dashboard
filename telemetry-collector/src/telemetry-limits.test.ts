@@ -1,5 +1,5 @@
-// How the telemetry collector admits instance ids it doesn't know yet, against a real Postgres,
-// like rollup-late-heartbeats.test.ts (skipped unless ROLLUP_TEST_PG=1, PG_PORT pointing at a
+// How the telemetry collector admits instance ids it doesn't know yet and what it forwards to
+// Bugsink at once, against a real Postgres, like rollup-late-heartbeats.test.ts (skipped unless ROLLUP_TEST_PG=1, PG_PORT pointing at a
 // throwaway Postgres). The first test also needs a free local port (TEST_TELEMETRY_PORT, default
 // 3838): it starts the collector and posts to it. Run this file on its own: the Postgres-backed test
 // files share one database and empty its tables.
@@ -188,4 +188,148 @@ test('with Postgres: a waiting heartbeat is kept without its error counts, for a
   const ids = left.rows.map((r) => r.id);
   assert.ok(ids.includes(recent), 'a row of six days ago was deleted');
   assert.ok(!ids.includes(old), 'a row of eight days ago is still waiting');
+});
+
+// The per-instance share (TELEMETRY_MAX_FORWARDS_PER_INSTANCE_PER_DAY) is meant to keep invented
+// fingerprints from a few ids from taking the day's forwards from real errors (README).
+// Ten ids that the collector knows (ten heartbeats, ten of the day's 500 places for new ids) each
+// post one instant batch of ten new fingerprints just after midnight: that is the day's 100. A
+// group that two installations known for weeks report is then not forwarded that day.
+test('with Postgres: invented fingerprints from ten ids don\'t take every forward of the day from an error two known installations report', { skip }, async (t) => {
+  await migrate();
+  await pool.query('TRUNCATE heartbeats, instance_meta, new_instance_counts, pending_heartbeats, error_counts, error_forwards, error_instant_forwards, error_forward_senders');
+  const dsn = env.bugsinkTelemetryDsn;
+  env.bugsinkTelemetryDsn = 'https://77896adcc21c4520acff7ea093e42b2d@bugsink.example.org/2';
+  t.after(() => { env.bugsinkTelemetryDsn = dsn; });
+  t.mock.method(log, 'info', () => {});
+  t.mock.method(log, 'warn', () => {});
+  const sent: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
+    sent.push(JSON.parse(String(init.body).trim().split('\n')[2]).fingerprint[1]);
+    return new Response(null, { status: 200 });
+  });
+  const { runForward } = await import('./forward.js');
+  const { forwardInstant, storeInstantErrors, resetInstantForTests } = await import('./instant.js');
+  const now = Date.now();
+
+  // Two installations known for weeks reported one error three days ago.
+  const complete = utcDay(-3);
+  for (const id of [crypto.randomUUID(), crypto.randomUUID()]) {
+    await pool.query("INSERT INTO instance_meta (instance_id, first_seen, last_seen, days_seen) VALUES ($1, current_date - 30, current_date, 30)", [id]);
+    await pool.query(
+      `INSERT INTO error_counts (instance_id, day, fingerprint, version, name, frames, count_bucket, days)
+       VALUES ($1, $2, 'fedcba9876543210', '1.21.1', 'TypeError', '[]', '6-10', 3)`, [id, complete]);
+  }
+
+  // Ten ids, known through one heartbeat each, each with ten fingerprints nobody else reports.
+  for (let i = 0; i < 10; i++) {
+    const id = crypto.randomUUID();
+    await storeHeartbeat(validate(heartbeat(id), now)!, now);
+    const batch = validateErrorBatch({ schema: '1', instance_id: id, day: utcDay(), errors: Array.from({ length: 10 }, (_, j) => ({
+      name: 'TypeError', fingerprint: (i * 100 + j + 1).toString(16).padStart(16, '0'), frames: [], version: '1.21.1', count: '1', days: 1,
+    })) }, now)!;
+    await storeInstantErrors(batch);
+    resetInstantForTests(); // a minute later: the 30-a-minute window is not what this is about
+    await forwardInstant(batch, now);
+  }
+
+  await runForward(now);
+  assert.ok(sent.includes('fedcba9876543210'),
+    `the error two known installations report was not forwarded; ${sent.length} invented groups from ten ids went instead`);
+});
+
+// Instant forwards are for installations the collector has known for more than a day: a new error
+// one of them reports still goes to Bugsink at once. They take at most half of the day's forwards,
+// so the daily forward keeps the other half for the errors many installations report.
+test('with Postgres: a long-known installation\'s new error goes at once, and instant forwards take at most half of the day\'s', { skip }, async (t) => {
+  await migrate();
+  await pool.query('TRUNCATE heartbeats, instance_meta, error_counts, error_forwards, error_instant_forwards, error_forward_senders, instance_arrivals');
+  const dsn = env.bugsinkTelemetryDsn;
+  env.bugsinkTelemetryDsn = 'https://77896adcc21c4520acff7ea093e42b2d@bugsink.example.org/2';
+  t.after(() => { env.bugsinkTelemetryDsn = dsn; });
+  t.mock.method(log, 'info', () => {});
+  t.mock.method(log, 'warn', () => {});
+  const sent: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
+    sent.push(JSON.parse(String(init.body).trim().split('\n')[2]).fingerprint[1]);
+    return new Response(null, { status: 200 });
+  });
+  const { runForward } = await import('./forward.js');
+  const { forwardInstant, resetInstantForTests } = await import('./instant.js');
+  const now = Date.now();
+  const today = new Date(now).toISOString().slice(0, 10);
+  const knownForAMonth = async () => {
+    const id = crypto.randomUUID();
+    await pool.query('INSERT INTO instance_arrivals (instance_id, first_day) VALUES ($1, $2::date - 30)', [id, today]);
+    return id;
+  };
+  const batchOf = (id: string, fingerprints: string[]) => validateErrorBatch({ schema: '1', instance_id: id, day: today, errors: fingerprints.map((fingerprint) => ({
+    name: 'TypeError', fingerprint, frames: [], version: '1.21.1', count: '1', days: 1,
+  })) }, now)!;
+
+  // An installation known for a month reports an error nobody reported today.
+  const veteran = await knownForAMonth();
+  const first = batchOf(veteran, ['00000000000000aa']);
+  await storeInstantErrors(first, now);
+  resetInstantForTests();
+  assert.deepEqual(await forwardInstant(first, now), { forwarded: 1, failed: 0 });
+  assert.deepEqual(sent, ['00000000000000aa']);
+
+  // Two installations reported one error three days ago.
+  for (const id of [await knownForAMonth(), await knownForAMonth()]) {
+    await pool.query(
+      `INSERT INTO error_counts (instance_id, day, fingerprint, version, name, frames, count_bucket, days)
+       VALUES ($1, $2, 'fedcba9876543210', '1.21.1', 'TypeError', '[]', '6-10', 3)`, [id, utcDay(-3)]);
+  }
+  // Ten installations known for a month send ten new groups each.
+  for (let i = 0; i < 10; i++) {
+    const batch = batchOf(await knownForAMonth(), Array.from({ length: 10 }, (_, j) => (i * 100 + j + 1).toString(16).padStart(16, '0')));
+    await storeInstantErrors(batch, now);
+    resetInstantForTests();
+    await forwardInstant(batch, now);
+  }
+  assert.equal(sent.length, Math.floor(env.maxForwardedGroupsPerDay / 2), 'instant forwards took more than half of the day\'s');
+
+  // The daily forward has the other half.
+  sent.length = 0;
+  await runForward(now);
+  assert.deepEqual(sent, ['fedcba9876543210']);
+});
+
+// Ids stored before the collector kept arrival days get the latest day their first heartbeat or
+// batch can have arrived on, from what the server recorded itself, so none counts as known for more
+// than a day sooner than it should. An id with nothing left loses its row with the rollup.
+test('with Postgres: ids stored before arrival days were kept get one from what the server recorded', { skip }, async (t) => {
+  await migrate();
+  await pool.query('TRUNCATE heartbeats, instance_meta, error_counts');
+  await pool.query('DROP TABLE instance_arrivals');
+  t.mock.method(log, 'info', () => {});
+  const [month, yesterday, crashes] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+  // An installation first heard of a month ago, sending since.
+  await pool.query(`INSERT INTO heartbeats (instance_id, day, payload, received_at) VALUES
+    ($1, current_date - 30, '{}', now() - interval '30 days'), ($1, current_date, '{}', now())`, [month]);
+  await pool.query('INSERT INTO instance_meta (instance_id, first_seen, last_seen) VALUES ($1, current_date - 30, current_date)', [month]);
+  // One that arrived yesterday with a heartbeat that named the day before.
+  await pool.query(`INSERT INTO heartbeats (instance_id, day, payload, received_at) VALUES ($1, current_date - 2, '{}', now() - interval '1 day')`, [yesterday]);
+  await pool.query('INSERT INTO instance_meta (instance_id, first_seen, last_seen) VALUES ($1, current_date - 2, current_date - 2)', [yesterday]);
+  // A desktop app's crash report counts for yesterday, and no heartbeat.
+  await pool.query(`INSERT INTO error_counts (instance_id, day, fingerprint, version, name, frames, count_bucket, days)
+    VALUES ($1, current_date - 1, '1234567890abcdef', '0.3.0-beta.1+desktop', 'Error', '[]', '1', 1)`, [crashes]);
+
+  await migrate();
+  const expected = (await pool.query<Record<string, string>>(`SELECT
+    to_char(((now() - interval '30 days') AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS month,
+    to_char(((now() - interval '1 day') AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS yesterday,
+    to_char((now() AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS today`)).rows[0];
+  const firstDay = async (id: string) => (await pool.query<{ d: string }>(
+    "SELECT to_char(first_day, 'YYYY-MM-DD') AS d FROM instance_arrivals WHERE instance_id = $1", [id])).rows[0]?.d;
+  assert.equal(await firstDay(month), expected.month);
+  assert.equal(await firstDay(yesterday), expected.yesterday, 'the day its heartbeat named counted, not the day it arrived');
+  assert.equal(await firstDay(crashes), expected.today);
+
+  const gone = crypto.randomUUID();
+  await pool.query("INSERT INTO instance_arrivals (instance_id, first_day) VALUES ($1, current_date - 100)", [gone]);
+  await runRollup();
+  assert.equal(await firstDay(gone), undefined, 'an id with nothing left keeps its first day');
+  assert.equal(await firstDay(crashes), expected.today);
 });

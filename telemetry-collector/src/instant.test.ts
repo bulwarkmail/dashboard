@@ -32,6 +32,8 @@ function mockDb(t: import('node:test').TestContext, claimed: (params: unknown[])
     }
     // The instance still has its share of the day's forwards.
     if (sql.includes('INSERT INTO error_forward_senders')) return { rows: [{ instance_id: INSTANCE }], rowCount: 1 };
+    // The collector first stored the instance more than a day ago.
+    if (sql.includes('FROM instance_arrivals')) return { rows: [{}], rowCount: 1 };
     return { rows: [], rowCount: 0 };
   };
   t.mock.method(pool, 'query', record);
@@ -175,6 +177,7 @@ test('instant forwards count against the day\'s 100 groups for Bugsink', async (
     if (sql.includes(' AS sent')) return { rows: [{ sent: String(sentToday) }], rowCount: 1 };
     if (sql.startsWith('INSERT INTO error_instant_forwards')) return { rows: [{ ok: 1 }], rowCount: 1 };
     if (sql.includes('INSERT INTO error_forward_senders')) return { rows: [{ instance_id: INSTANCE }], rowCount: 1 };
+    if (sql.includes('FROM instance_arrivals')) return { rows: [{}], rowCount: 1 };
     return { rows: [], rowCount: 0 };
   };
   t.mock.method(pool, 'query', record);
@@ -203,6 +206,7 @@ test('one instance\'s instant batches bring in at most its share of the day\'s f
       charged++;
       return { rows: [{ instance_id: INSTANCE }], rowCount: 1 };
     }
+    if (sql.includes('FROM instance_arrivals')) return { rows: [{}], rowCount: 1 };
     return { rows: [], rowCount: 0 };
   };
   t.mock.method(pool, 'query', record);

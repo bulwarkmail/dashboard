@@ -122,6 +122,37 @@ CREATE TABLE IF NOT EXISTS error_forward_senders (
   PRIMARY KEY (day, instance_id)
 );
 
+-- The UTC day the collector first stored each instance id it knows (a
+-- heartbeat or an error batch), by its own clock, never a day a heartbeat
+-- names. "Known for more than a day" is measured from it. Only the day, like a
+-- desktop heartbeat's arrival. Deleted once the id has no heartbeat,
+-- instance_meta row or error counts left (rollup.ts).
+DO $$
+BEGIN
+  IF to_regclass('instance_arrivals') IS NULL THEN
+    CREATE TABLE instance_arrivals (
+      instance_id  uuid PRIMARY KEY,
+      first_day    date NOT NULL
+    );
+    -- Ids stored before this table existed get the latest day their first
+    -- heartbeat or batch can have arrived on: the day of the earliest
+    -- received_at of their heartbeats (when one of them arrived; a desktop's is
+    -- the start of that day), or two days after the earliest day of their error
+    -- counts (an error batch arrives on its day or the next, a heartbeat's
+    -- errors are for the day before a heartbeat that may arrive a day late),
+    -- never later than today.
+    INSERT INTO instance_arrivals (instance_id, first_day)
+    SELECT instance_id, min(day) FROM (
+      SELECT instance_id, (received_at AT TIME ZONE 'UTC')::date AS day FROM heartbeats
+      UNION ALL
+      SELECT instance_id, LEAST(day + 2, (now() AT TIME ZONE 'UTC')::date) FROM error_counts
+      UNION ALL
+      SELECT instance_id, (now() AT TIME ZONE 'UTC')::date FROM instance_meta
+    ) seen
+    GROUP BY instance_id;
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS collector_runs (
   id           bigserial PRIMARY KEY,
   job          text        NOT NULL,

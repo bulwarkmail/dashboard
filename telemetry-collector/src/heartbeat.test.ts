@@ -42,8 +42,8 @@ const heartbeatInsert = (calls: Array<{ sql: string; params: unknown[] }>) => ca
 test('a v1 heartbeat is stored as before and touches no error table', async (t) => {
   const calls = mockDb(t);
   await storeHeartbeat(validate(v1, NOW)!, NOW);
-  // First whether the id is new (and may be stored today), then the two rows.
-  assert.deepEqual(calls.map((c) => c.sql.split(' ').slice(0, 3).join(' ')), ['WITH known AS', 'INSERT INTO heartbeats', 'INSERT INTO instance_meta']);
+  // First whether the id is new (and may be stored today), then the two rows and the id's first day.
+  assert.deepEqual(calls.map((c) => c.sql.split(' ').slice(0, 3).join(' ')), ['WITH known AS', 'INSERT INTO heartbeats', 'INSERT INTO instance_arrivals', 'INSERT INTO instance_meta']);
   assert.equal(JSON.parse(heartbeatInsert(calls).params[2] as string).schema, '1');
   // The admission reads error_counts (an id with error counts is known); nothing writes it.
   assert.equal(calls.some((c) => /^(INSERT INTO|DELETE FROM|UPDATE) error_counts/.test(c.sql)), false);
@@ -55,7 +55,7 @@ test('a v2 heartbeat stores its errors for the day before, replacing that day\'s
   const heartbeat = JSON.parse(heartbeatInsert(calls).params[2] as string);
   assert.equal('errors' in heartbeat, false);
   assert.deepEqual(calls.map((c) => c.sql.split(' ').slice(0, 3).join(' ')), [
-    'WITH known AS', 'INSERT INTO heartbeats', 'INSERT INTO instance_meta', 'BEGIN', 'DELETE FROM error_counts', 'INSERT INTO error_counts', 'COMMIT',
+    'WITH known AS', 'INSERT INTO heartbeats', 'INSERT INTO instance_arrivals', 'INSERT INTO instance_meta', 'BEGIN', 'DELETE FROM error_counts', 'INSERT INTO error_counts', 'COMMIT',
   ]);
   const insert = calls.find((c) => c.sql.startsWith('INSERT INTO error_counts'))!;
   assert.deepEqual(insert.params.slice(0, 5), ['f0c1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b', '2026-11-09', '0123456789abcdef', '1.20.0', 'TypeError']);

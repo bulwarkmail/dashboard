@@ -39,7 +39,7 @@ export async function promotePending(now = Date.now()): Promise<number> {
       [utcDay(now - 2 * DAY_MS), left],
     );
     for (const { instance_id } of waiting.rows) {
-      if ((await promoteInstance(instance_id)) === 0) continue;
+      if ((await promoteInstance(instance_id, now)) === 0) continue;
       await pool.query(
         `INSERT INTO new_instance_counts (day, count, promoted) VALUES ($1, 0, 1)
          ON CONFLICT (day) DO UPDATE SET promoted = new_instance_counts.promoted + 1`,

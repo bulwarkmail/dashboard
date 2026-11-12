@@ -11,7 +11,8 @@ import { log } from './log.js';
 // 3. Delete heartbeats older than retentionDays, and instance_meta rows of
 //    instances last seen before then. Past the window only daily_rollups
 //    remain (no per-instance grain). Deferred heartbeats go after
-//    PENDING_RETENTION_DAYS.
+//    PENDING_RETENTION_DAYS, an id's first day (instance_arrivals) with the
+//    last of its rows.
 
 /** How many finished days each run computes again. */
 const RECOMPUTED_DAYS = 2;
@@ -88,6 +89,13 @@ export async function runRollup(now = Date.now()): Promise<void> {
       [cutoff],
     );
     log.info('rollup.deleted_instance_meta', { cutoff, rows: delMeta.rows[0]?.deleted ?? 0 });
+    // An id with nothing left loses its first day too.
+    await pool.query(
+      `DELETE FROM instance_arrivals a
+        WHERE NOT EXISTS (SELECT 1 FROM heartbeats h WHERE h.instance_id = a.instance_id)
+          AND NOT EXISTS (SELECT 1 FROM instance_meta m WHERE m.instance_id = a.instance_id)
+          AND NOT EXISTS (SELECT 1 FROM error_counts e WHERE e.instance_id = a.instance_id)`,
+    );
   } catch (e) {
     firstError = e instanceof Error ? e.message : String(e);
     log.error('rollup.aborted', { err: firstError });

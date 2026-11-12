@@ -18,6 +18,29 @@ const KNOWN_ID = `SELECT 1 FROM heartbeats WHERE instance_id = $1
        LIMIT 1`;
 
 /**
+ * Note that the collector stored something of this instance id at `now`: the
+ * UTC day of the first time stays in instance_arrivals.
+ */
+export async function recordArrival(instanceId: string, now: number): Promise<void> {
+  await pool.query(
+    'INSERT INTO instance_arrivals (instance_id, first_day) VALUES ($1, $2) ON CONFLICT (instance_id) DO NOTHING',
+    [instanceId, new Date(now).toISOString().slice(0, 10)],
+  );
+}
+
+/**
+ * Whether the collector first stored this instance id more than a day before
+ * `now`, by its own clock: on the UTC day before yesterday or earlier.
+ */
+export async function knownForMoreThanADay(instanceId: string, now: number): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    'SELECT 1 FROM instance_arrivals WHERE instance_id = $1 AND first_day < $2::date - 1',
+    [instanceId, new Date(now).toISOString().slice(0, 10)],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
  * Whether an error batch of this instance id, arriving at `now`, may be
  * stored. A known id may. An id the collector hasn't seen takes one of the
  * day's places for new ids (new_instance_counts, shared with heartbeats) and
@@ -42,7 +65,7 @@ export async function admitErrorSender(instanceId: string, now = Date.now()): Pr
   const row = rows[0];
   if (!row || row.known) return true;
   if (row.count === null || row.count > env.maxNewInstancesPerDay) return false;
-  await promoteInstance(instanceId);
+  await promoteInstance(instanceId, now);
   return true;
 }
 
@@ -108,8 +131,8 @@ export async function storeHeartbeat(clean: CleanHeartbeat | CleanHeartbeatV2, n
     );
     return 'deferred';
   }
-  await writeHeartbeat(clean);
-  if (admission === 'new') await promoteInstance(clean.instance_id);
+  await writeHeartbeat(clean, now);
+  if (admission === 'new') await promoteInstance(clean.instance_id, now);
   return 'stored';
 }
 
@@ -118,16 +141,17 @@ type WaitingHeartbeat = Omit<CleanHeartbeatV2, 'errors'> & { errors?: CleanHeart
 
 /**
  * Store an instance's deferred heartbeats under their own days, oldest first,
- * and remove them from pending_heartbeats. Returns how many there were.
+ * and remove them from pending_heartbeats, at `now`. Returns how many there
+ * were.
  */
-export async function promoteInstance(instanceId: string): Promise<number> {
+export async function promoteInstance(instanceId: string, now = Date.now()): Promise<number> {
   const { rows } = await pool.query<{ day: string; heartbeat: CleanHeartbeat | WaitingHeartbeat }>(
     `SELECT to_char(day, 'YYYY-MM-DD') AS day, heartbeat FROM pending_heartbeats
       WHERE instance_id = $1 ORDER BY day`,
     [instanceId],
   );
   for (const row of rows) {
-    await writeHeartbeat(row.heartbeat);
+    await writeHeartbeat(row.heartbeat, now);
     await pool.query('DELETE FROM pending_heartbeats WHERE instance_id = $1 AND day = $2', [instanceId, row.day]);
   }
   return rows.length;
@@ -139,9 +163,10 @@ export async function promoteInstance(instanceId: string): Promise<number> {
  * read v1 and v2 alike. A v2 heartbeat's error counts are for the UTC day
  * before the heartbeat's day; they replace what this instance sent for that
  * day before. A deferred v2 heartbeat comes without them and touches no
- * error counts.
+ * error counts. The first heartbeat stored for an id records the UTC day of
+ * `now` in instance_arrivals.
  */
-async function writeHeartbeat(clean: CleanHeartbeat | CleanHeartbeatV2 | WaitingHeartbeat): Promise<void> {
+async function writeHeartbeat(clean: CleanHeartbeat | CleanHeartbeatV2 | WaitingHeartbeat, now: number): Promise<void> {
   const day = clean.ts.slice(0, 10);
   const { errors, ...stored } = clean as WaitingHeartbeat;
   // A desktop app is one person: the time it starts each day says when they work.
@@ -155,6 +180,7 @@ async function writeHeartbeat(clean: CleanHeartbeat | CleanHeartbeatV2 | Waiting
        received_at = ${receivedAt}`,
     [clean.instance_id, day, JSON.stringify(stored)],
   );
+  await recordArrival(clean.instance_id, now);
   // "Instances ever seen" counts servers.
   if (desktop) return;
   // Maintain instance_meta inline so panels keyed off first/last/days_seen

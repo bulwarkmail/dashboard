@@ -2,6 +2,7 @@ import { pool } from './db.js';
 import { env } from './env.js';
 import { log } from './log.js';
 import { SEND_TIMEOUT_MS, buildForwardEvent, chargeReporter, envelope, envelopeUrlFor, forwardBudget, refundReporter } from './forward.js';
+import { knownForMoreThanADay, recordArrival } from './heartbeat.js';
 import type { CleanErrorBatch } from './validate.js';
 
 // Instant error counts (POST /v1/errors): instances with the error-count
@@ -10,9 +11,11 @@ import type { CleanErrorBatch } from './validate.js';
 //
 // They go into error_counts like a heartbeat's, for the day they are for;
 // that instance's next heartbeat replaces them with the complete day. The
-// first report of a (day, fingerprint, version) from any instance goes to
-// Bugsink at once. Later reports don't: the daily forward sends the
-// summary across instances two days later, into the same Bugsink issue.
+// first report of a (day, fingerprint, version) from an instance the
+// collector first stored more than a day ago goes to Bugsink at once, while
+// instant forwards have used less than half of the day's budget. Later
+// reports don't: the daily forward sends the summary across instances two
+// days later, into the same Bugsink issue, and keeps the other half.
 
 /** Instant forwards to Bugsink per minute, across all instances. */
 export const INSTANT_PER_MINUTE = 30;
@@ -81,8 +84,25 @@ function giveSlotBack(): void {
   if (windowCount > 0) windowCount--;
 }
 
-/** Store a batch: each error replaces what this instance sent for it that day. */
-export async function storeInstantErrors(batch: CleanErrorBatch): Promise<void> {
+/**
+ * Instant forwards that may still go out on the UTC day of `now`: at most
+ * half of `maxForwardedGroupsPerDay` a day, so the daily forward keeps the
+ * other half.
+ */
+async function instantShareLeft(now: number): Promise<number> {
+  const since = `${new Date(now).toISOString().slice(0, 10)}T00:00:00.000Z`;
+  const { rows } = await pool.query<{ instant: string | number }>(
+    'SELECT count(*) AS instant FROM error_instant_forwards WHERE forwarded_at >= $1',
+    [since],
+  );
+  return Math.max(0, Math.floor(env.maxForwardedGroupsPerDay / 2) - Number(rows[0]?.instant ?? 0));
+}
+
+/**
+ * Store a batch arriving at `now`: each error replaces what this instance
+ * sent for it that day.
+ */
+export async function storeInstantErrors(batch: CleanErrorBatch, now = Date.now()): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -106,12 +126,16 @@ export async function storeInstantErrors(batch: CleanErrorBatch): Promise<void> 
   } finally {
     client.release();
   }
+  await recordArrival(batch.instance_id, now);
 }
 
 /**
- * Send the errors of `batch` no instance reported yet today to Bugsink, while
- * the day's budget of forwarded groups (`forwardBudget`) and the instance's
- * share of it (`chargeReporter`) last.
+ * Send the errors of `batch` no instance reported yet today to Bugsink, if
+ * the collector first stored the instance more than a day ago, while the
+ * day's budget of forwarded groups (`forwardBudget`), the instant forwards'
+ * half of it (`instantShareLeft`) and the instance's share (`chargeReporter`)
+ * last. An instance first stored today or yesterday waits for the daily
+ * forward.
  * Each is claimed in error_instant_forwards first, so it goes once across
  * instances and concurrent batches; a failed send gives the claim back.
  * Never throws.
@@ -122,7 +146,8 @@ export async function forwardInstant(batch: CleanErrorBatch, now = Date.now()): 
   const target = envelopeUrlFor(env.bugsinkTelemetryDsn);
   if (!target) return result;
   try {
-    const budget = await forwardBudget(now);
+    if (!(await knownForMoreThanADay(batch.instance_id, now))) return result;
+    const budget = Math.min(await forwardBudget(now), await instantShareLeft(now));
     for (const error of batch.errors) {
       if (result.forwarded >= budget) break;
       if (!takeSlot(now)) break;

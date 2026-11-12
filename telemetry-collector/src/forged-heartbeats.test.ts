@@ -333,7 +333,9 @@ test('with Postgres: one instance brings in at most its share of the day\'s erro
   const row = (instance: string, fingerprint: string) => pool.query(
     `INSERT INTO error_counts (instance_id, day, fingerprint, version, name, frames, count_bucket, days)
      VALUES ($1, $2, $3, '1.21.1', 'TypeError', '[]', '1', 1)`, [instance, complete, fingerprint]);
-  // Fifteen groups only one instance reports, and one that two others report.
+  // Fifteen groups only one instance reports, and one that two others report. The collector has
+  // known `one` for a month, so its instant batches may go at once.
+  await pool.query('INSERT INTO instance_arrivals (instance_id, first_day) VALUES ($1, current_date - 30)', [one]);
   for (let i = 0; i < 15; i++) await row(one, i.toString(16).padStart(16, '0'));
   await row(other, 'fedcba9876543210');
   await row(third, 'fedcba9876543210');

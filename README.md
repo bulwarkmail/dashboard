@@ -47,6 +47,56 @@ First run: generates `.env` with random secrets and exits - fill in `GRAFANA_DOM
 
 Subsequent runs render every nginx vhost from `nginx/*.conf.template` and overwrite what is in `/etc/nginx/sites-available`, so a change made on the host by hand belongs in the template first. Then they request any missing Let's Encrypt certs, pull compose images, restart services, rebuild + reload the pm2 collectors, apply Grafana's read-only database logins.
 
+### On a host that is not a git checkout
+
+A host can hold the stack as copied files instead of a clone. There the update copies main's tree
+over the stack's folder: every file main has is replaced, every other file stays. What stays is
+what the host made: `.env`, `data/`, `secrets/`, `collector/.env`, `node_modules/` and `dist/`
+(deploy.sh rebuilds them), backups, a token file outside `secrets/`. A change made on the host by
+hand to a file main has (a dashboard, a template, `version-server/overrides.json`) goes into the
+repo first, or the copy takes it away.
+
+On a machine with the repo, main's tree with LF line endings, then onto the host:
+
+```sh
+git fetch origin
+git -c core.autocrlf=false archive -o dashboard-main.tar origin/main
+scp dashboard-main.tar <host>:/tmp/
+```
+
+On the host, first what the copy would change, by name; nothing changes yet:
+
+```sh
+cd /opt/bulwark-dashboard
+tmp=$(mktemp -d) && tar -x -f /tmp/dashboard-main.tar -C "$tmp"
+(cd "$tmp" && find . -type f) | while read -r f; do
+  if ! sudo test -e "$f"; then echo "new      $f"; elif ! sudo cmp -s "$tmp/$f" "$f"; then echo "replaced $f"; fi
+done
+rm -rf "$tmp"
+```
+
+A `replaced` file loses what the host has in it. For each one whose change isn't in the repo, look
+at it (lines with a password, secret or token left out) and carry what should stay into the repo,
+then make a new archive:
+
+```sh
+f=<file>; tar -xOf /tmp/dashboard-main.tar "$f" | sudo diff -u "$f" - | grep -viE 'password|secret|token'
+```
+
+Then the copy, as the folder's owner, and the check, which prints nothing once every file of main
+is there with main's content:
+
+```sh
+sudo -u "$(stat -c %U /opt/bulwark-dashboard)" tar -x -f /tmp/dashboard-main.tar -C /opt/bulwark-dashboard
+tar -tf /tmp/dashboard-main.tar | grep -v '/$' | while read -r f; do
+  tar -xOf /tmp/dashboard-main.tar "$f" | sudo cmp -s - "/opt/bulwark-dashboard/$f" || echo "differs from main: $f"
+done
+rm /tmp/dashboard-main.tar
+```
+
+A file main has deleted stays on the host; a dashboard JSON left in `grafana/dashboards/` is still
+provisioned, so remove such a file by hand. Then `sudo bash deploy.sh`.
+
 ## Grafana's database logins
 
 Grafana runs any SQL a signed-in user sends to a data source, Viewers included. So its four

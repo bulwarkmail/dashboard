@@ -49,7 +49,7 @@ Subsequent runs render every nginx vhost from `nginx/*.conf.template` and overwr
 
 ## Grafana's database logins
 
-Grafana runs any SQL a signed-in user sends to a data source, Viewers included. So its three
+Grafana runs any SQL a signed-in user sends to a data source, Viewers included. So its four
 Postgres data sources don't log in as the owners of the databases but as roles that can only read:
 
 - `grafana_dashboard_ro` - every table of the GitHub collector in `dashboard`, also tables it adds
@@ -57,17 +57,21 @@ Postgres data sources don't log in as the owners of the databases but as roles t
 - `grafana_umami_ro` - only `website`, `website_event`, `session` and `event_data` in `umami`.
   Umami's other tables (logins, API keys, two-factor secrets) stay closed.
 - `grafana_telemetry_ro` - every table of the telemetry collector in `telemetry`.
+- `grafana_warden_ro` - only `warden_runs` in `warden`, for the Warden dashboard. The Warden bot
+  (github-discord-bot) creates and owns that database where it runs next to this stack; the stack
+  doesn't, and without it the Warden data source fails its queries and the grants file leaves it out.
 
 They own nothing, can't create tables, temporary tables, functions or large objects, connect only to
 their own database, take at most 10 connections and write at most 100 MB of temporary files per
-query (`temp_file_limit`, which only a superuser can change). Nothing in the three databases is
-granted to PUBLIC. `postgres/grafana-read-only.sql` sets all of this. It is idempotent: a new data
+query (`temp_file_limit`, which only a superuser can change). Nothing in the four databases is
+granted to PUBLIC; the Warden bot's role keeps its rights in its own database as its owner. `postgres/grafana-read-only.sql` sets all of this. It is idempotent: a new data
 directory runs it after `init.sql`, and `deploy.sh` runs it on every deploy, right after Postgres is
 up and again after the apps started. Each part runs in one transaction, so a Grafana session that
 starts during a deploy gets the logins as they were or as they are after it, always with their
 limits. Each run also puts back the logins' passwords from `.env`
 (`POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD`, `POSTGRES_GRAFANA_UMAMI_RO_PASSWORD`,
-`POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD`; `deploy.sh` generates missing ones) and their settings:
+`POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD`, `POSTGRES_GRAFANA_WARDEN_RO_PASSWORD`; `deploy.sh`
+generates missing ones) and their settings:
 Postgres lets every role change its own password and session defaults, so a Viewer can break its
 own data source until the next deploy, but not keep it broken. The file stops, naming them, when a
 database holds a schema other than `public` or a function that runs as its owner: the apps make

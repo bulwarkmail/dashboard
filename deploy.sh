@@ -63,7 +63,7 @@ if [ ! -f .env ]; then
 fi
 # Secrets added after the first release: generated in an existing .env too.
 for name in POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD POSTGRES_GRAFANA_UMAMI_RO_PASSWORD POSTGRES_GRAFANA_TELEMETRY_RO_PASSWORD \
-            POSTGRES_QUERY_WATCHDOG_PASSWORD UMAMI_ADMIN_PASSWORD; do
+            POSTGRES_GRAFANA_WARDEN_RO_PASSWORD POSTGRES_QUERY_WATCHDOG_PASSWORD UMAMI_ADMIN_PASSWORD; do
   ensure_secret "$name"
 done
 if [ "$FIRST_RUN" = 1 ]; then

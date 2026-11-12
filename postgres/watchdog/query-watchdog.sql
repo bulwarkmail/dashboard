@@ -12,18 +12,18 @@
 -- statements cancelled, the sessions ended.
 WITH slow AS MATERIALIZED (
   SELECT pid FROM pg_stat_activity
-   WHERE usename IN ('grafana_dashboard_ro', 'grafana_umami_ro', 'grafana_telemetry_ro')
+   WHERE usename IN ('grafana_dashboard_ro', 'grafana_umami_ro', 'grafana_telemetry_ro', 'grafana_warden_ro')
      AND state = 'active'
      AND now() - query_start > interval '20 seconds'
      AND now() - query_start <= interval '30 seconds'
 ), stubborn AS MATERIALIZED (
   SELECT pid FROM pg_stat_activity
-   WHERE usename IN ('grafana_dashboard_ro', 'grafana_umami_ro', 'grafana_telemetry_ro')
+   WHERE usename IN ('grafana_dashboard_ro', 'grafana_umami_ro', 'grafana_telemetry_ro', 'grafana_warden_ro')
      AND state = 'active'
      AND now() - query_start > interval '30 seconds'
 ), stuck AS MATERIALIZED (
   SELECT pid FROM pg_stat_activity
-   WHERE usename IN ('grafana_dashboard_ro', 'grafana_umami_ro', 'grafana_telemetry_ro')
+   WHERE usename IN ('grafana_dashboard_ro', 'grafana_umami_ro', 'grafana_telemetry_ro', 'grafana_warden_ro')
      AND state LIKE 'idle in transaction%'
      AND now() - state_change > interval '60 seconds'
 )

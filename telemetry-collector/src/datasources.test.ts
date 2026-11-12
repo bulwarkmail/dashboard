@@ -98,6 +98,27 @@ for (const source of postgresSources()) {
   });
 }
 
+test('each read-only login\'s password reaches Grafana and Postgres, and deploy.sh generates it', () => {
+  const names = [...read('grafana/provisioning/datasources/datasources.yml').matchAll(/password:\s*\$\{([A-Z][A-Z0-9_]+)\}/g)].map((m) => m[1]);
+  assert.equal(names.length, postgresSources().length, 'a Postgres data source has no password from the environment');
+  const compose = read('docker-compose.yml');
+  const service = (name: string) => {
+    const at = compose.indexOf(`\n  ${name}:`);
+    assert.ok(at >= 0, `no service ${name}`);
+    const next = compose.slice(at + 1).search(/\n {2}[a-z-]+:\r?\n/);
+    return compose.slice(at, next === -1 ? undefined : at + 1 + next);
+  };
+  // The list deploy.sh fills in an existing .env.
+  const generated = /# Secrets added after the first release[^\n]*\n(for name in [\s\S]*?; do)/.exec(read('deploy.sh'))?.[1] ?? '';
+  assert.ok(generated, 'deploy.sh has no list of secrets it adds to an existing .env');
+  for (const name of names) {
+    assert.match(service('grafana'), new RegExp(`\\n\\s+${name}: \\$\\{${name}\\}`), `Grafana gets no ${name}`);
+    assert.match(service('postgres'), new RegExp(`\\n\\s+${name}: \\$\\{${name}\\}`), `the postgres container has no ${name} for the grants file`);
+    assert.match(read('postgres/grafana-read-only.sql'), new RegExp(`\\$${name}\\b`), `grafana-read-only.sql doesn't set ${name}`);
+    assert.match(generated, new RegExp(`\\b${name}\\b`), `deploy.sh doesn't generate ${name}`);
+  }
+});
+
 test('a service cancels the read-only logins\' long statements, which their own timeout can\'t promise', () => {
   const compose = read('docker-compose.yml');
   assert.match(compose, /query-watchdog:[\s\S]*?entrypoint: \["\/bin\/sh", "\/watchdog\/query-watchdog\.sh"\]/);

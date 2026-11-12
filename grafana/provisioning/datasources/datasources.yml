@@ -59,3 +59,22 @@ datasources:
       timescaledb: false
       maxOpenConns: 8
     editable: false
+
+  # The Warden bot's ledger (warden_runs), in the warden database the bot
+  # keeps in this Postgres where it runs on the same host; without that
+  # database this source fails its queries.
+  - name: Warden (Postgres)
+    uid: warden_pg
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    user: grafana_warden_ro
+    secureJsonData:
+      password: ${POSTGRES_GRAFANA_WARDEN_RO_PASSWORD}
+    jsonData:
+      database: warden
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+      maxOpenConns: 8
+    editable: false

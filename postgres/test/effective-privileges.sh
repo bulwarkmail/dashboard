@@ -72,6 +72,27 @@ psql_as dashboard dashboard "GRANT ALL ON repos TO PUBLIC;
   ALTER DEFAULT PRIVILEGES FOR ROLE dashboard GRANT ALL ON TABLES TO PUBLIC" >/dev/null || bad "leftovers in dashboard"
 psql_as telemetry telemetry "GRANT ALL ON expired_instances TO PUBLIC; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO PUBLIC" >/dev/null || bad "leftovers in telemetry"
 
+# Most hosts have no Warden bot and so no warden database: the grants file leaves it out there.
+if docker exec -i "$NAME" psql -X -q -v ON_ERROR_STOP=1 -U postgres -d postgres -f - < "$ROOT/postgres/grafana-read-only.sql" >/dev/null 2>"$ERR"; then
+  ok "grafana-read-only.sql runs where there is no warden database"
+else
+  bad "grafana-read-only.sql fails where there is no warden database: $(tail -1 "$ERR")"
+fi
+# The Warden bot's database as the bot makes it (github-discord-bot, src/warden/ledger.js): its own
+# role owns the database and its tables. A second table stands for anything the dashboard doesn't
+# show. The Warden data source used to log in as the owner, so a user could have left a grant to
+# PUBLIC behind.
+super postgres "CREATE ROLE warden LOGIN PASSWORD 'fake-warden'" >/dev/null || bad "warden role"
+super postgres "CREATE DATABASE warden OWNER warden" >/dev/null || bad "warden database"
+psql_as warden warden "CREATE TABLE warden_runs (id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(),
+    platform text NOT NULL, kind text NOT NULL, place text, url text, author text, route text, action text,
+    check_result text, rounds integer, seconds numeric, input_tokens integer, cache_read integer,
+    cache_write integer, output_tokens integer, cost_usd numeric, cost_by_model jsonb, posted boolean, reason text);
+  CREATE INDEX warden_runs_ts ON warden_runs (ts);
+  CREATE TABLE warden_notes (note text);
+  INSERT INTO warden_runs (platform, kind, cost_usd) VALUES ('github', 'new_issue', 0.01);
+  GRANT ALL ON warden_runs TO PUBLIC" >/dev/null || bad "warden stand-in tables"
+
 # Everything else in postgres/ is run as the superuser, twice: the grants file has to be safe to run
 # on every deploy, and it is what the owner runs on a host where init.sql ran long ago.
 for file in "$ROOT"/postgres/*.sql; do
@@ -120,6 +141,7 @@ while read -r role db _ <&3; do
     dashboard) readable="repos repo_snapshots releases release_assets commit_snapshots loc_snapshots container_pull_snapshots"; written='UPDATE repos SET default_branch = default_branch'; secret='SELECT error FROM collector_runs';;
     telemetry) readable="heartbeats instance_meta expired_instances error_counts"; written="INSERT INTO expired_instances (day, count) VALUES ('2001-01-01', 1)"; secret='';;
     umami)     readable="website website_event session event_data"; written="UPDATE \"user\" SET password = 'x'"; secret='SELECT password FROM "user"';;
+    warden)    readable="warden_runs"; written="UPDATE warden_runs SET reason = 'changed'"; secret='SELECT count(*) FROM warden_notes';;
     *)         readable=""; written='CREATE TABLE probe_w (n int)'; secret='';;
   esac
   for table in $readable; do expect_allowed "reads $table" "$role" "$db" "SELECT count(*) FROM $table"; done
@@ -131,7 +153,7 @@ while read -r role db _ <&3; do
   expect_refused "create a large object" "$role" "$db" "SELECT lo_from_bytea(0, 'x'::bytea)"
   [ -n "$secret" ] && expect_refused "read a column the dashboards do not show ($secret)" "$role" "$db" "$secret"
   [ "$db" = umami ] && expect_refused "read Umami's two-factor secrets" "$role" "$db" 'SELECT secret FROM two_factor_auth'
-  for other in grafana umami dashboard telemetry postgres template1; do
+  for other in grafana umami dashboard telemetry warden postgres template1; do
     [ "$other" = "$db" ] && continue
     [ "$(super postgres "SELECT has_database_privilege('$role', '$other', 'CONNECT')")" = "f" ] && ok "$role cannot connect to $other" || bad "$role can connect to $other"
   done
@@ -149,6 +171,7 @@ echo "== tables created after the grants"
 psql_as dashboard dashboard 'CREATE TABLE later_snapshots (n int)' >/dev/null || bad "dashboard could not create a table"
 psql_as telemetry telemetry 'CREATE TABLE later_rollups (n int)' >/dev/null || bad "telemetry could not create a table"
 psql_as umami umami 'CREATE TABLE later_umami (n int)' >/dev/null || bad "umami could not create a table"
+psql_as warden warden 'CREATE TABLE later_warden (n int)' >/dev/null || bad "warden could not create a table"
 psql_as dashboard dashboard 'DROP TABLE collector_runs' >/dev/null || bad "dashboard could not drop collector_runs"
 schema_as dashboard dashboard "$ROOT/collector/src/schema.sql" || bad "collector schema did not load again"
 super dashboard "INSERT INTO collector_runs (job, error) VALUES ('git', 'text that may hold a credential')" >/dev/null
@@ -159,6 +182,7 @@ while read -r role db _ <&3; do
       expect_refused "read collector_runs after the collector made it again" "$role" "$db" 'SELECT error FROM collector_runs';;
     telemetry) expect_allowed "reads a table the collector created later" "$role" "$db" 'SELECT count(*) FROM later_rollups';;
     umami)     expect_refused "read a table Umami created later" "$role" "$db" 'SELECT count(*) FROM later_umami';;
+    warden)    expect_refused "read a table the Warden bot created later" "$role" "$db" 'SELECT count(*) FROM later_warden';;
   esac
 done 3<<EOF
 $sources
@@ -175,7 +199,7 @@ echo "== what was left from before the grants"
 expect_refused "write repos through a grant to PUBLIC made before the grants ran" grafana_dashboard_ro dashboard "UPDATE repos SET default_branch = 'changed'"
 psql_as dashboard dashboard 'CREATE TABLE made_after_leftovers (n int)' >/dev/null
 expect_refused "write a table made later, through default privileges for PUBLIC made before" grafana_dashboard_ro dashboard "INSERT INTO made_after_leftovers VALUES (1)"
-for db in dashboard umami telemetry; do
+for db in dashboard umami telemetry warden; do
   left=$(super "$db" "SELECT
       (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace, aclexplode(c.relacl) a
         WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname !~ '^pg_' AND a.grantee = 0)
@@ -198,6 +222,14 @@ if grants; then bad "the grants file finished with an owner-rights function in t
 super telemetry "DROP FUNCTION public.as_owner()" >/dev/null
 grants && ok "the grants file runs again once they are gone" || bad "the grants file fails on a clean database: $(tail -1 "$ERR")"
 
+echo "== the Warden bot's own role keeps what it needs"
+expect_allowed "the bot writes its ledger" warden warden "INSERT INTO warden_runs (platform, kind) VALUES ('discord', 'comment')"
+expect_allowed "the bot runs its schema at start" warden warden "CREATE TABLE IF NOT EXISTS warden_runs (id bigserial PRIMARY KEY); CREATE INDEX IF NOT EXISTS warden_runs_ts ON warden_runs (ts)"
+[ "$(docker exec -e PGPASSWORD=fake-warden "$NAME" psql -X -q -At -h "$ADDR" -U warden -d warden -c 'SELECT count(*) > 0 FROM warden_runs' 2>&1 </dev/null)" = t ] \
+  && ok "the bot logs in to its database over TCP" || bad "the bot can't log in to its database"
+[ "$(login grafana_warden_ro warden POSTGRES_GRAFANA_WARDEN_RO_PASSWORD 'SELECT count(*) > 0 FROM warden_runs')" = t ] \
+  && ok "the Warden data source's login reads warden_runs over TCP" || bad "the Warden data source's login can't read warden_runs"
+
 echo "== what the logins can change about themselves, and what each deploy puts back"
 psql_as grafana_dashboard_ro dashboard "ALTER ROLE grafana_dashboard_ro SET search_path = 'nowhere'" >/dev/null && ok "a login may change its own settings (Postgres allows it; each deploy resets them)" || bad "self settings: unexpected"
 expect_refused "change another login's settings" grafana_dashboard_ro dashboard "ALTER ROLE grafana_umami_ro SET search_path = 'nowhere'"
@@ -216,7 +248,7 @@ settings=$(super postgres "SELECT coalesce(string_agg(coalesce(d.datname, '*') |
   && ok "the grants file puts the password from the environment back" || bad "the data source still can't log in"
 
 echo "== the query watchdog"
-[ "$(super postgres "SELECT has_database_privilege('grafana_query_watchdog', 'dashboard', 'CONNECT') OR has_database_privilege('grafana_query_watchdog', 'umami', 'CONNECT') OR has_database_privilege('grafana_query_watchdog', 'telemetry', 'CONNECT')")" = f ] \
+[ "$(super postgres "SELECT has_database_privilege('grafana_query_watchdog', 'dashboard', 'CONNECT') OR has_database_privilege('grafana_query_watchdog', 'umami', 'CONNECT') OR has_database_privilege('grafana_query_watchdog', 'telemetry', 'CONNECT') OR has_database_privilege('grafana_query_watchdog', 'warden', 'CONNECT')")" = f ] \
   && ok "the watchdog connects to none of the apps' databases" || bad "the watchdog can connect to an app database"
 docker exec -d -e PGPASSWORD=fake-POSTGRES_GRAFANA_DASHBOARD_RO_PASSWORD "$NAME" sh -c \
   "psql -X -h $ADDR -U grafana_dashboard_ro -d dashboard -c 'SET statement_timeout = 0' -c 'SELECT pg_sleep(60)' > /tmp/long-query.out 2>&1"

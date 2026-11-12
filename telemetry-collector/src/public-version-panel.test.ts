@@ -38,10 +38,18 @@ function heartbeat(version: string, id = crypto.randomUUID()): Record<string, un
   };
 }
 
-/** Post a heartbeat the way the server does: validate, then store. A refused one stores nothing. */
-async function post(body: Record<string, unknown>): Promise<void> {
-  const now = Date.now();
-  const clean = validate(body, now);
+/**
+ * A time on the last day the panel's window covers. The window ends on the UTC date of an hour
+ * ago, so a heartbeat stored with the current time falls outside it between 00:00 and 01:00 UTC.
+ */
+async function windowEnd(): Promise<number> {
+  const { rows } = await pool.query<{ d: string }>("SELECT to_char((now() - interval '1 hour')::date, 'YYYY-MM-DD') AS d");
+  return Date.parse(`${rows[0].d}T00:30:00Z`);
+}
+
+/** Post a heartbeat sent and arriving at `now` the way the server does: validate, then store. A refused one stores nothing. */
+async function post(body: Record<string, unknown>, now: number): Promise<void> {
+  const clean = validate({ ...body, ts: new Date(now).toISOString() }, now);
   if (clean) await storeHeartbeat(clean, now);
 }
 
@@ -57,15 +65,16 @@ after(async () => {
 test('with Postgres: invented versions from single ids neither replace the real ones on the public version table nor show up on it', { skip: !withPg && 'set ROLLUP_TEST_PG=1 and point PG_PORT at a throwaway Postgres' }, async () => {
   await migrate();
   await pool.query('TRUNCATE heartbeats, instance_meta, new_instance_counts, pending_heartbeats');
+  const at = await windowEnd();
 
   // What instances really run.
-  for (let i = 0; i < 30; i++) await post(heartbeat('1.21.1'));
-  for (let i = 0; i < 4; i++) await post(heartbeat('1.20.0'));
-  for (let i = 0; i < 3; i++) await post(heartbeat('1.21.0-beta.2'));
+  for (let i = 0; i < 30; i++) await post(heartbeat('1.21.1'), at);
+  for (let i = 0; i < 4; i++) await post(heartbeat('1.20.0'), at);
+  for (let i = 0; i < 3; i++) await post(heartbeat('1.21.0-beta.2'), at);
 
   // One caller, 25 new ids, one invented version each: as many rows as the table has.
   const invented = Array.from({ length: 25 }, (_, i) => `9${String(99 - i).padStart(2, '0')}.0.0-INVENTED.TEXT.see.some-site.example`);
-  for (const version of invented) await post(heartbeat(version));
+  for (const version of invented) await post(heartbeat(version), at);
 
   const table = await shown();
   assert.ok(table.includes('1.21.1'), `the version 30 instances run is not on the table: ${table.slice(0, 4).join(', ')} ...`);
@@ -77,17 +86,19 @@ test('with Postgres: invented versions from single ids neither replace the real 
 test('with Postgres: release-shaped versions from new ids come after what installations known for days run', { skip: !withPg && 'set ROLLUP_TEST_PG=1 and point PG_PORT at a throwaway Postgres' }, async () => {
   await migrate();
   await pool.query('TRUNCATE heartbeats, instance_meta, new_instance_counts, pending_heartbeats, instance_arrivals');
+  const at = await windowEnd();
 
   // Installations known for ten days.
-  for (let i = 0; i < 30; i++) await post(heartbeat('1.21.1'));
-  for (let i = 0; i < 4; i++) await post(heartbeat('1.20.0'));
-  for (let i = 0; i < 3; i++) await post(heartbeat('1.21.0-beta.2'));
+  for (let i = 0; i < 30; i++) await post(heartbeat('1.21.1'), at);
+  for (let i = 0; i < 4; i++) await post(heartbeat('1.20.0'), at);
+  for (let i = 0; i < 3; i++) await post(heartbeat('1.21.0-beta.2'), at);
   await pool.query("UPDATE instance_arrivals SET first_day = current_date - 10");
 
-  // Today: 30 new ids, each with a high version of the right shape, and two new ids that share one.
+  // On the window's last day: 30 new ids, each with a high version of the right shape, and two new
+  // ids that share one.
   const single = Array.from({ length: 30 }, (_, i) => `${900 + i}.0.0`);
-  for (const version of single) await post(heartbeat(version));
-  for (let i = 0; i < 2; i++) await post(heartbeat('999.9.9'));
+  for (const version of single) await post(heartbeat(version), at);
+  for (let i = 0; i < 2; i++) await post(heartbeat('999.9.9'), at);
 
   const table = await shown();
   assert.deepEqual(table.slice(0, 3), ['1.21.1', '1.20.0', '1.21.0-beta.2'], `the real versions are not first: ${table.join(', ')}`);

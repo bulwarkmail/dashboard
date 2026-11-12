@@ -56,15 +56,19 @@ test('.env.example names every variable the compose file needs and none that not
 
 test('.env.example names the collector\'s settings, and the README the version server\'s health fields', () => {
   const example = read('.env.example');
-  const collectorReads = [...read('collector/src/env.ts').matchAll(/num\('(COLLECTOR_[A-Z0-9_]+)'/g)].map((m) => m[1]);
+  // The collector reads its numbers with num(...), its limits and intervals with limit(...).
+  const collectorReads = [...read('collector/src/env.ts').matchAll(/\b(?:num|limit)\('(COLLECTOR_[A-Z0-9_]+)'/g)].map((m) => m[1]);
   const limits = ['COLLECTOR_SCAN_DEADLINE_MS', 'COLLECTOR_UNPACK_MAX_BYTES', 'COLLECTOR_UNPACK_MAX_ENTRIES'];
   for (const name of new Set([...collectorReads, ...limits, 'GITHUB_ORG'])) {
     assert.match(example, new RegExp(`^#?${name}=`, 'm'), `.env.example has no ${name}`);
   }
+  // What happens to a value the collector doesn't take.
+  assert.ok(example.includes('collector.setting_ignored'), '.env.example doesn\'t say what an unusable setting does');
   const readme = read('README.md');
-  for (const word of [...limits, 'GITHUB_ORG', 'overrides.json', 'overridesStale', 'overridesProblem']) {
+  for (const word of [...limits, 'GITHUB_ORG', 'overrides.json', 'overridesStale', 'overridesProblem', 'releases-unavailable']) {
     assert.ok(readme.includes(word), `the README doesn't mention ${word}`);
   }
+  assert.match(readme, /names a key twice/, 'the README doesn\'t say that a key named twice makes overrides.json invalid');
 });
 
 test('Grafana\'s own metrics are not served without a login', () => {
@@ -181,6 +185,18 @@ test('the apps get no secret through pm2, and pm2\'s saved list is root\'s alone
   assert.match(deploy, /for f in "\$PM2_DIR"\/dump\.pm2\*; do\s*\n\s*if \[ -e "\$f" \]; then chmod 600 "\$f"; fi/);
   // envsubst gets only the values a template names.
   assert.match(deploy, /env -i PATH="\$PATH" "\$\{values\[@\]\}" envsubst "\$vars"/);
+});
+
+test('deploy.sh starts a pm2 daemon an older deploy left with the stack\'s variables once more, from a clean environment', () => {
+  const deploy = withoutComments(read('deploy.sh'));
+  const update = deploy.indexOf('pm2_clean "$HOME" update');
+  assert.ok(update > 0, 'the pm2 daemon an older deploy started keeps the old .env values');
+  // After the apps were started without them, before the saved list is written and closed.
+  assert.ok(update > deploy.indexOf('deploy_app version-server bulwark-version-server'), 'pm2 update runs before the apps are deployed');
+  assert.ok(update < deploy.indexOf('pm2_clean "$HOME" save --force'), 'pm2 update runs after the saved list was closed');
+  // Only while the daemon holds a variable named in .env: later deploys keep it running.
+  assert.match(deploy, /if pm2_daemon_holds_env; then/);
+  assert.match(deploy, /\/proc\/\$pid\/environ/);
 });
 
 test('signing in through the identity provider does not make everyone a Viewer', () => {

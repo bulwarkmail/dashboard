@@ -329,6 +329,24 @@ deploy_app telemetry-collector bulwark-telemetry-collector "$HOME"
 # --- 8b. version-server (pm2) ---------------------------------------------
 deploy_app version-server bulwark-version-server "$HOME"
 
+# pm2's daemon keeps the environment of the shell that first started it, and
+# older deploys started it with all of .env exported. While it still holds a
+# variable named in .env, it is started once more from the clean environment
+# (pm2 update saves the process list, starts a new daemon and the apps from
+# the list); later deploys find it clean and leave it running. Only names are
+# compared; no value is printed.
+pm2_daemon_holds_env() {
+  local pid names
+  pid=$(cat "$PM2_DIR/pm2.pid" 2>/dev/null) || return 0
+  names=$(tr '\0' '\n' 2>/dev/null < "/proc/$pid/environ" | cut -d= -f1) || return 0
+  [ -n "$names" ] || return 0
+  grep -qxF -f <(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '=') <<<"$names"
+}
+if pm2_daemon_holds_env; then
+  log "Restarting pm2's daemon once, without the variables an older deploy gave it"
+  pm2_clean "$HOME" update >/dev/null
+fi
+
 # The saved process list (twice, so the backup copy is the new list too),
 # readable by root only.
 pm2_clean "$HOME" save --force >/dev/null

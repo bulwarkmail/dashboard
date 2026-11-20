@@ -5,6 +5,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # A Postgres major needs a dump and restore and a new volume layout.
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: npm
     directory: /collector
     schedule:
